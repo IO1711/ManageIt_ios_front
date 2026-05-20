@@ -1,0 +1,1491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ManageIt iPhone Technical Specification</title>
+    <style>
+        :root {
+            --bg: #f4efe6;
+            --surface: rgba(255, 251, 245, 0.92);
+            --surface-strong: #fffaf1;
+            --surface-soft: rgba(255, 255, 255, 0.76);
+            --line: rgba(75, 59, 42, 0.14);
+            --line-strong: rgba(75, 59, 42, 0.22);
+            --text: #2d241c;
+            --muted: #726455;
+            --accent: #bf5b2c;
+            --accent-soft: rgba(191, 91, 44, 0.12);
+            --accent-2: #1f6b62;
+            --accent-2-soft: rgba(31, 107, 98, 0.12);
+            --warning: #8d5d12;
+            --warning-soft: rgba(208, 156, 58, 0.14);
+            --danger: #a6442f;
+            --danger-soft: rgba(166, 68, 47, 0.12);
+            --shadow: 0 24px 60px rgba(58, 38, 19, 0.08);
+            --shadow-soft: 0 12px 28px rgba(58, 38, 19, 0.08);
+            --radius-xl: 32px;
+            --radius-lg: 26px;
+            --radius-md: 20px;
+            --radius-sm: 14px;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        html, body {
+            margin: 0;
+            min-height: 100%;
+            background:
+                radial-gradient(circle at top left, rgba(191, 91, 44, 0.12), transparent 30%),
+                radial-gradient(circle at bottom right, rgba(31, 107, 98, 0.10), transparent 28%),
+                var(--bg);
+            color: var(--text);
+            font-family: "Avenir Next", "Segoe UI", "Helvetica Neue", sans-serif;
+            scroll-behavior: smooth;
+        }
+
+        body {
+            padding: 24px;
+        }
+
+        a {
+            color: inherit;
+        }
+
+        code {
+            font-family: "SFMono-Regular", "Menlo", "Monaco", monospace;
+        }
+
+        .app {
+            display: grid;
+            grid-template-columns: 320px minmax(0, 1fr);
+            gap: 24px;
+            min-height: calc(100vh - 48px);
+        }
+
+        .sidebar,
+        .content {
+            background: var(--surface);
+            border: 1px solid var(--line);
+            box-shadow: var(--shadow);
+            backdrop-filter: blur(20px);
+            min-height: 0;
+        }
+
+        .sidebar {
+            position: sticky;
+            top: 24px;
+            align-self: start;
+            border-radius: 28px;
+            padding: 24px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+            max-height: calc(100vh - 48px);
+            overflow-y: auto;
+        }
+
+        .content {
+            border-radius: var(--radius-xl);
+            padding: 28px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .eyebrow {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            width: fit-content;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .sidebar h1,
+        .hero h2,
+        .section-header h3,
+        .card h4,
+        .feature-card h4,
+        details summary h4 {
+            margin: 0;
+            line-height: 1.06;
+        }
+
+        .sidebar h1 {
+            font-size: 31px;
+            font-weight: 800;
+        }
+
+        .sidebar p,
+        .hero p,
+        .section-header p,
+        .card p,
+        .feature-card p,
+        .muted,
+        .meta-list,
+        .pill-list li,
+        .timeline li,
+        .note-list li,
+        .endpoint-list li {
+            color: var(--muted);
+        }
+
+        .sidebar p {
+            margin: 0;
+            font-size: 14px;
+            line-height: 1.55;
+        }
+
+        .start-card,
+        .nav-card,
+        .card,
+        .feature-card,
+        .hero,
+        .banner,
+        details {
+            background: var(--surface-soft);
+            border: 1px solid var(--line);
+            border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-soft);
+        }
+
+        .start-card,
+        .nav-card {
+            padding: 16px;
+        }
+
+        .start-card {
+            background: linear-gradient(135deg, rgba(255, 245, 231, 0.95), rgba(255, 255, 255, 0.92));
+            border-color: rgba(191, 91, 44, 0.18);
+        }
+
+        .start-card strong {
+            color: var(--accent);
+        }
+
+        .nav-list {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .nav-link {
+            display: block;
+            padding: 12px 14px;
+            border-radius: 16px;
+            text-decoration: none;
+            background: rgba(255, 255, 255, 0.7);
+            border: 1px solid transparent;
+            transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .nav-link:hover,
+        .nav-link:focus-visible {
+            transform: translateY(-1px);
+            border-color: rgba(191, 91, 44, 0.2);
+            background: rgba(255, 255, 255, 0.94);
+            outline: none;
+        }
+
+        .hero {
+            padding: 26px;
+            background:
+                linear-gradient(135deg, rgba(255, 247, 233, 0.94), rgba(255, 255, 255, 0.96)),
+                var(--surface-strong);
+            border-color: rgba(191, 91, 44, 0.16);
+            display: grid;
+            grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.8fr);
+            gap: 22px;
+        }
+
+        .hero h2 {
+            font-size: 38px;
+            font-weight: 800;
+        }
+
+        .hero p {
+            margin: 12px 0 0;
+            font-size: 15px;
+            line-height: 1.65;
+        }
+
+        .hero-side {
+            display: grid;
+            gap: 14px;
+        }
+
+        .mini-stat {
+            padding: 16px;
+            border-radius: 20px;
+            background: rgba(255, 255, 255, 0.84);
+            border: 1px solid var(--line);
+        }
+
+        .mini-stat-label {
+            font-size: 12px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--muted);
+        }
+
+        .mini-stat-value {
+            margin-top: 8px;
+            font-size: 28px;
+            font-weight: 800;
+        }
+
+        .mini-stat-value.accent {
+            color: var(--accent);
+        }
+
+        .mini-stat-value.safe {
+            color: var(--accent-2);
+        }
+
+        .chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        .chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.84);
+            border: 1px solid var(--line);
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0.04em;
+        }
+
+        .section {
+            display: flex;
+            flex-direction: column;
+            gap: 18px;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 16px;
+        }
+
+        .section-header h3 {
+            font-size: 28px;
+            font-weight: 800;
+        }
+
+        .section-header p {
+            margin: 10px 0 0;
+            font-size: 14px;
+            line-height: 1.55;
+            max-width: 720px;
+        }
+
+        .summary-grid,
+        .card-grid,
+        .feature-grid,
+        .endpoint-grid,
+        .blocker-grid {
+            display: grid;
+            gap: 18px;
+        }
+
+        .summary-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .card-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .feature-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .endpoint-grid,
+        .blocker-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .card,
+        .feature-card {
+            padding: 20px;
+        }
+
+        .card h4,
+        .feature-card h4 {
+            font-size: 18px;
+            font-weight: 800;
+            margin-bottom: 12px;
+        }
+
+        .card p,
+        .feature-card p {
+            margin: 0;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .badge-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 7px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        .badge.implemented {
+            background: var(--accent-2-soft);
+            color: var(--accent-2);
+        }
+
+        .badge.planned {
+            background: var(--accent-soft);
+            color: var(--accent);
+        }
+
+        .badge.blocked {
+            background: var(--danger-soft);
+            color: var(--danger);
+        }
+
+        .badge.warning {
+            background: var(--warning-soft);
+            color: var(--warning);
+        }
+
+        .list-title {
+            margin: 16px 0 8px;
+            font-size: 12px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text);
+        }
+
+        .pill-list,
+        .note-list,
+        .endpoint-list,
+        .timeline {
+            margin: 0;
+            padding-left: 18px;
+        }
+
+        .pill-list li,
+        .note-list li,
+        .endpoint-list li,
+        .timeline li {
+            margin: 6px 0;
+            font-size: 14px;
+            line-height: 1.55;
+        }
+
+        .meta-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 14px;
+            font-size: 13px;
+        }
+
+        .meta-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: baseline;
+        }
+
+        .meta-label {
+            font-weight: 800;
+            color: var(--text);
+        }
+
+        .path-pill {
+            display: inline-block;
+            padding: 6px 10px;
+            border-radius: 12px;
+            background: rgba(45, 36, 28, 0.06);
+            color: var(--text);
+            font-size: 12px;
+            overflow-wrap: anywhere;
+        }
+
+        .banner {
+            padding: 18px 20px;
+            background: linear-gradient(135deg, rgba(207, 233, 228, 0.66), rgba(255, 255, 255, 0.92));
+            border-color: rgba(31, 107, 98, 0.16);
+        }
+
+        .banner strong {
+            color: var(--accent-2);
+        }
+
+        details {
+            overflow: hidden;
+        }
+
+        details[open] {
+            background: rgba(255, 255, 255, 0.84);
+        }
+
+        summary {
+            list-style: none;
+            cursor: pointer;
+            padding: 18px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }
+
+        summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .summary-left {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .summary-left h4 {
+            font-size: 18px;
+            font-weight: 800;
+        }
+
+        .summary-left p {
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.55;
+            color: var(--muted);
+        }
+
+        .summary-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(45, 36, 28, 0.08);
+            font-size: 14px;
+            font-weight: 800;
+            flex-shrink: 0;
+        }
+
+        .details-body {
+            padding: 0 20px 20px;
+            border-top: 1px solid rgba(75, 59, 42, 0.08);
+        }
+
+        .details-body .grid-two {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+            margin-top: 16px;
+        }
+
+        .inner-panel {
+            padding: 16px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.72);
+            border: 1px solid rgba(75, 59, 42, 0.10);
+        }
+
+        .inner-panel h5 {
+            margin: 0 0 10px;
+            font-size: 14px;
+            font-weight: 800;
+        }
+
+        .endpoint-card {
+            background: rgba(255, 255, 255, 0.8);
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            padding: 20px;
+        }
+
+        .endpoint-top {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+            margin-bottom: 12px;
+        }
+
+        .method {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 58px;
+            padding: 7px 11px;
+            border-radius: 999px;
+            background: #2c2a28;
+            color: #f8f2ea;
+            font-size: 11px;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        .method.post,
+        .method.put,
+        .method.patch,
+        .method.get {
+            background: #2c2a28;
+        }
+
+        .endpoint-path {
+            font-size: 16px;
+            font-weight: 800;
+            word-break: break-word;
+        }
+
+        .feature-card {
+            background:
+                linear-gradient(135deg, rgba(255, 250, 244, 0.96), rgba(255, 255, 255, 0.94));
+        }
+
+        .feature-card.blocked-card {
+            background:
+                linear-gradient(135deg, rgba(255, 242, 240, 0.96), rgba(255, 255, 255, 0.94));
+            border-color: rgba(166, 68, 47, 0.18);
+        }
+
+        .timeline-card {
+            padding: 22px;
+            border-radius: 26px;
+            background: rgba(255, 255, 255, 0.8);
+            border: 1px solid var(--line);
+        }
+
+        .timeline {
+            counter-reset: steps;
+            list-style: none;
+            padding-left: 0;
+            display: grid;
+            gap: 14px;
+        }
+
+        .timeline li {
+            counter-increment: steps;
+            position: relative;
+            padding: 14px 16px 14px 58px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.78);
+            border: 1px solid rgba(75, 59, 42, 0.08);
+        }
+
+        .timeline li::before {
+            content: counter(steps);
+            position: absolute;
+            left: 16px;
+            top: 14px;
+            width: 28px;
+            height: 28px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: var(--accent-soft);
+            color: var(--accent);
+            font-size: 12px;
+            font-weight: 800;
+        }
+
+        .footer-note {
+            padding: 18px 20px;
+            border-radius: 22px;
+            background: rgba(255, 255, 255, 0.74);
+            border: 1px solid var(--line);
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--muted);
+        }
+
+        @media (max-width: 1180px) {
+            .app {
+                grid-template-columns: 1fr;
+            }
+
+            .sidebar {
+                position: static;
+                max-height: none;
+            }
+
+            .hero,
+            .summary-grid,
+            .card-grid,
+            .feature-grid,
+            .endpoint-grid,
+            .blocker-grid,
+            .details-body .grid-two {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 720px) {
+            body {
+                padding: 14px;
+            }
+
+            .content {
+                padding: 18px;
+            }
+
+            .hero {
+                padding: 20px;
+            }
+
+            .hero h2 {
+                font-size: 31px;
+            }
+
+            .section-header h3 {
+                font-size: 24px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <aside class="sidebar">
+            <span class="eyebrow">ManageIt iPhone Spec</span>
+            <h1>iOS Technical Spec</h1>
+            <p>Readable handoff companion to <code>ios_front_technical_spec.md</code>. Markdown is authoritative, and this HTML page is kept in sync for easier reading.</p>
+
+            <div class="start-card">
+                <div class="mini-stat-label">Start Here</div>
+                <p><strong>Continue development from Part II.</strong> That is the "should be implemented" part. Part I is only current repo reality, and the Markdown spec remains the source of truth.</p>
+            </div>
+
+            <div class="nav-card">
+                <div class="mini-stat-label">Navigation</div>
+                <nav class="nav-list" aria-label="Section navigation">
+                    <a class="nav-link" href="#summary">Executive Summary</a>
+                    <a class="nav-link" href="#part1">Part I. Current Implementation</a>
+                    <a class="nav-link" href="#current-files">Current Files</a>
+                    <a class="nav-link" href="#current-api">Implemented Backend Contract</a>
+                    <a class="nav-link" href="#part2">Part II. Required Completion Spec</a>
+                    <a class="nav-link" href="#required-api">Required Shared Backend Contract</a>
+                    <a class="nav-link" href="#feature-blocks">Key Feature Blocks</a>
+                    <a class="nav-link" href="#build-order">Build Order</a>
+                    <a class="nav-link" href="#blockers">Part III. Open Decisions</a>
+                </nav>
+            </div>
+
+            <div class="nav-card">
+                <div class="mini-stat-label">Document Split</div>
+                <div class="meta-list">
+                    <div class="meta-row"><span class="meta-label">Part I:</span><span>Current code and current pairing-only backend usage</span></div>
+                    <div class="meta-row"><span class="meta-label">Part II:</span><span>Everything still required to finish the prototype</span></div>
+                    <div class="meta-row"><span class="meta-label">Part III:</span><span>Only the remaining backend DTO blockers</span></div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="content">
+            <section class="hero">
+                <div>
+                    <span class="eyebrow">Standalone HTML Spec</span>
+                    <h2>ManageIt iPhone Prototype Technical Specification</h2>
+                    <p>This page is the human-readable companion to the iPhone technical spec. It keeps the current code reference, but foregrounds the actual implementation work the next iOS developer still needs to do.</p>
+                    <div class="chip-row">
+                        <span class="chip">Current app is pairing-first</span>
+                        <span class="chip">Prototype completion starts in Part II</span>
+                        <span class="chip">Movement and history are still partially blocked</span>
+                    </div>
+                </div>
+                <div class="hero-side">
+                    <div class="mini-stat">
+                        <div class="mini-stat-label">Current State</div>
+                        <div class="mini-stat-value accent">Pairing + Placeholder</div>
+                    </div>
+                    <div class="mini-stat">
+                        <div class="mini-stat-label">Implementation Focus</div>
+                        <div class="mini-stat-value safe">Session, Inventory, Editors</div>
+                    </div>
+                    <div class="mini-stat">
+                        <div class="mini-stat-label">Main Blockers</div>
+                        <div class="mini-stat-value">2 remaining blockers</div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="section" id="summary">
+                <div class="section-header">
+                    <div>
+                        <h3>Executive Summary</h3>
+                        <p>Use this section to understand what already exists, what is still missing, and what "prototype complete" means for the current iPhone plan.</p>
+                    </div>
+                </div>
+
+                <div class="summary-grid">
+                    <article class="card">
+                        <div class="badge-row">
+                            <span class="badge implemented">Implemented Today</span>
+                        </div>
+                        <h4>Current App Scope</h4>
+                        <ul class="pill-list">
+                            <li>App bootstrap</li>
+                            <li>Pairing UI</li>
+                            <li>QR scanning</li>
+                            <li>Manual pairing-link fallback</li>
+                            <li>Pairing scan, status polling, and completion</li>
+                            <li>Refresh token persistence in Keychain</li>
+                            <li>Stable <code>installationId</code> persistence in Keychain</li>
+                            <li>Local paired-device context persistence</li>
+                            <li>Post-pairing placeholder screen</li>
+                        </ul>
+                    </article>
+
+                    <article class="card">
+                        <div class="badge-row">
+                            <span class="badge planned">Not Implemented Today</span>
+                        </div>
+                        <h4>Missing Major Areas</h4>
+                        <ul class="pill-list">
+                            <li>Launch-time session restore</li>
+                            <li>General authenticated API layer</li>
+                            <li>Inventory list and detail</li>
+                            <li>Item create and item edit flows</li>
+                            <li>Planning update UI</li>
+                            <li>Movement, rental, and return UI</li>
+                            <li>Item history UI</li>
+                            <li>Admin item archive UI</li>
+                            <li>Admin location-management UI</li>
+                            <li>Automated tests</li>
+                        </ul>
+                    </article>
+
+                    <article class="card">
+                        <div class="badge-row">
+                            <span class="badge warning">Definition Of Complete Prototype</span>
+                        </div>
+                        <h4>Done Means</h4>
+                        <ul class="pill-list">
+                            <li>QR pairing activates the iPhone as a device</li>
+                            <li>Stable installation identity is stored in Keychain</li>
+                            <li>Refresh token is stored in Keychain</li>
+                            <li>Access token stays in memory only</li>
+                            <li>Recoverable paired-device summary may stay in <code>UserDefaults</code></li>
+                            <li>The finished authenticated shell uses a tab bar root</li>
+                            <li>Future launches refresh and open directly into inventory unless revoked</li>
+                            <li>Inventory, editing, planning, movement, and history match the shared backend contract</li>
+                            <li><code>EDITOR</code> and <code>ADMIN</code> role boundaries are respected</li>
+                        </ul>
+                    </article>
+                </div>
+            </section>
+
+            <section class="section" id="part1">
+                <div class="section-header">
+                    <div>
+                        <h3>Part I. Current Implementation Reference</h3>
+                        <p>This part is only current repo reality. It is useful for orientation, but it is not the "what should be implemented" section.</p>
+                    </div>
+                </div>
+
+                <div class="banner">
+                    <strong>Current project configuration:</strong> project file is <code>ios_front/ManageIt/ManageIt.xcodeproj</code>, bundle identifier is <code>com.bestAppleDev.ManageIt</code>, deployment target is <code>26.2</code>, generated Info.plist is enabled, and the prototype still needs an explicit App Transport Security decision for LAN HTTP mode.
+                </div>
+
+                <div class="section-header" id="current-files">
+                    <div>
+                        <h3>Current Swift Files</h3>
+                        <p>Grouped file-by-file reference for what exists today. Open any block to see the current types, main functions, and why the file exists.</p>
+                    </div>
+                </div>
+
+                <details>
+                    <summary>
+                        <div class="summary-left">
+                            <h4>App Entry And Root State</h4>
+                            <p><code>ManageItApp.swift</code>, <code>AppModel.swift</code>, and <code>ContentView.swift</code></p>
+                        </div>
+                        <span class="summary-icon">01</span>
+                    </summary>
+                    <div class="details-body">
+                        <div class="grid-two">
+                            <div class="inner-panel">
+                                <h5><code>ManageItApp.swift</code></h5>
+                                <ul class="note-list">
+                                    <li><strong>Type:</strong> <code>ManageItApp</code></li>
+                                    <li><strong>Why:</strong> application entrypoint</li>
+                                    <li><strong>Fields:</strong> <code>appModel: AppModel</code></li>
+                                    <li><strong>Functions:</strong> <code>body -&gt; some Scene</code></li>
+                                    <li><strong>Does:</strong> boots one <code>WindowGroup</code> with <code>ContentView(appModel:)</code></li>
+                                </ul>
+                            </div>
+                            <div class="inner-panel">
+                                <h5><code>AppModel.swift</code></h5>
+                                <ul class="note-list">
+                                    <li><strong>Type:</strong> <code>AppModel</code></li>
+                                    <li><strong>Why:</strong> root state and dependency wiring</li>
+                                    <li><strong>Fields:</strong> <code>pairedDevice</code>, <code>activeSession</code>, <code>pairingModel</code>, <code>preferences</code>, <code>keychainStore</code></li>
+                                    <li><strong>Functions:</strong> <code>init()</code>, <code>clearLocalPairing()</code>, <code>storeActivatedDevice(response:serverAddress:)</code></li>
+                                    <li><strong>Does:</strong> restores local paired-device context, wires the pairing flow, stores refresh token and local session summary after pairing</li>
+                                </ul>
+                            </div>
+                            <div class="inner-panel">
+                                <h5><code>ContentView.swift</code></h5>
+                                <ul class="note-list">
+                                    <li><strong>Types:</strong> <code>ContentView</code>, <code>DeviceReadyView</code></li>
+                                    <li><strong>Why:</strong> current root view routing</li>
+                                    <li><strong>Functions:</strong> <code>body</code>, <code>deviceRow(_:_:)</code></li>
+                                    <li><strong>Does:</strong> shows pairing when no <code>pairedDevice</code> exists, otherwise shows the placeholder ready screen</li>
+                                </ul>
+                            </div>
+                            <div class="inner-panel">
+                                <h5>Current Limitation</h5>
+                                <ul class="note-list">
+                                    <li>Routing is based on <code>pairedDevice != nil</code>, not on real authenticated restore.</li>
+                                    <li>The post-pairing screen is still a placeholder, not the inventory app branch.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>
+                        <div class="summary-left">
+                            <h4>Pairing Feature</h4>
+                            <p><code>PairingFeature.swift</code>, <code>PairingFeatureModel.swift</code>, and pairing-specific local state</p>
+                        </div>
+                        <span class="summary-icon">02</span>
+                    </summary>
+                    <div class="details-body">
+                        <div class="grid-two">
+                            <div class="inner-panel">
+                                <h5><code>PairingFeature.swift</code></h5>
+                                <ul class="note-list">
+                                    <li><strong>Types:</strong> <code>PairingFeatureView</code>, <code>PairingProgressRow</code></li>
+                                    <li><strong>Functions:</strong> <code>body</code>, <code>header</code>, <code>scannerCard</code>, <code>waitingCard</code>, <code>manualEntryCard</code>, <code>errorCard</code>, <code>sectionLabel</code></li>
+                                    <li><strong>Does:</strong> renders QR scan UI, manual-link fallback, waiting state, and error state</li>
+                                </ul>
+                            </div>
+                            <div class="inner-panel">
+                                <h5><code>PairingFeatureModel.swift</code></h5>
+                                <ul class="note-list">
+                                    <li><strong>Types:</strong> <code>PairingFeatureModel</code>, <code>Phase</code>, <code>ResolvedServer</code>, <code>PairingPayload</code></li>
+                                    <li><strong>Key fields:</strong> <code>serverAddress</code>, <code>manualPairingCode</code>, <code>phase</code>, <code>errorMessage</code>, <code>lastStatus</code>, <code>scannerState</code>, <code>pollTask</code></li>
+                                    <li><strong>Key functions:</strong> <code>beginPairing(from:)</code>, <code>reset(keepServerAddress:)</code>, <code>applyStatus(_:)</code>, <code>beginPolling(pairingId:server:)</code>, <code>completePairing(pairingId:server:cancelPollingTask:)</code>, <code>handleFailure(_:)</code>, <code>parsePairingPayload(from:)</code>, <code>resolvedServer(explicitAddress:)</code></li>
+                                    <li><strong>Does:</strong> owns the full pairing state machine and activation handoff into <code>AppModel</code></li>
+                                </ul>
+                            </div>
+                            <div class="inner-panel">
+                                <h5><code>PairingModels.swift</code></h5>
+                                <ul class="note-list">
+                                    <li><strong>Types:</strong> <code>MobilePairingSessionStatus</code>, <code>MobilePairingScanRequest</code>, <code>MobilePairingStatusResponse</code>, <code>MobilePairingCompleteResponse</code></li>
+                                    <li><strong>Why:</strong> defines the current mobile pairing backend contract already used by the app</li>
+                                </ul>
+                            </div>
+                            <div class="inner-panel">
+                                <h5>Current Limitation</h5>
+                                <ul class="note-list">
+                                    <li>Pairing succeeds, but the app does not transition into a finished authenticated inventory branch.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>
+                        <div class="summary-left">
+                            <h4>QR Scanner Bridge</h4>
+                            <p><code>QRScannerView.swift</code> camera state, AVFoundation setup, and scan callback delivery</p>
+                        </div>
+                        <span class="summary-icon">03</span>
+                    </summary>
+                    <div class="details-body">
+                        <div class="grid-two">
+                            <div class="inner-panel">
+                                <h5><code>QRScannerView.swift</code></h5>
+                                <ul class="note-list">
+                                    <li><strong>Types:</strong> <code>PairingScannerState</code>, <code>QRScannerView</code>, <code>QRScannerView.Coordinator</code>, <code>ScannerPreviewView</code></li>
+                                    <li><strong>Functions:</strong> <code>makeCoordinator()</code>, <code>makeUIView(context:)</code>, <code>updateUIView(_:context:)</code>, <code>dismantleUIView(_:coordinator:)</code>, <code>attachPreview(_:)</code>, <code>setEnabled(_:)</code>, <code>stop()</code>, <code>prepareCamera()</code>, <code>configureIfNeededAndStart()</code>, <code>configureSession()</code>, <code>metadataOutput(_:didOutput:from:)</code></li>
+                                    <li><strong>Does:</strong> bridges <code>AVCaptureSession</code> into SwiftUI and delivers QR strings to the pairing feature</li>
+                                </ul>
+                            </div>
+                            <div class="inner-panel">
+                                <h5>Current Behavior</h5>
+                                <ul class="note-list">
+                                    <li>Handles camera permission and unavailable-camera states.</li>
+                                    <li>Falls back cleanly to manual pairing-link entry.</li>
+                                    <li>Deduplicates repeat scans for a short period.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>
+                        <div class="summary-left">
+                            <h4>Networking Layer</h4>
+                            <p><code>ManageItAPIClient.swift</code> and current error decoding</p>
+                        </div>
+                        <span class="summary-icon">04</span>
+                    </summary>
+                    <div class="details-body">
+                        <div class="grid-two">
+                            <div class="inner-panel">
+                                <h5><code>ManageItAPIClient.swift</code></h5>
+                                <ul class="note-list">
+                                    <li><strong>Type:</strong> <code>ManageItAPIClient</code></li>
+                                    <li><strong>Functions:</strong> <code>scanPairing(serverURL:request:)</code>, <code>fetchPairingStatus(serverURL:pairingId:)</code>, <code>completePairing(serverURL:pairingId:)</code>, <code>sendRequest(serverURL:path:method:body:)</code>, <code>buildURL(serverURL:path:)</code>, <code>transportFailure(for:error:)</code>, <code>transportFailureDetails(for:)</code></li>
+                                    <li><strong>Helper types:</strong> <code>APIErrorEnvelope</code>, <code>APIErrorBody</code></li>
+                                    <li><strong>Does:</strong> pairing-only REST client today</li>
+                                </ul>
+                            </div>
+                            <div class="inner-panel">
+                                <h5>Current Limitation</h5>
+                                <ul class="note-list">
+                                    <li>No authenticated bearer-request layer yet.</li>
+                                    <li>No refresh/logout/me support yet.</li>
+                                    <li>No item, lookup, or admin location endpoints yet.</li>
+                                    <li>Current codec is timestamp-first and not enough for business <code>DATE</code> values.</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>
+                        <div class="summary-left">
+                            <h4>Current Models</h4>
+                            <p><code>SessionModels.swift</code>, <code>ManageItError.swift</code>, and supporting DTOs</p>
+                        </div>
+                        <span class="summary-icon">05</span>
+                    </summary>
+                    <div class="details-body">
+                        <div class="grid-two">
+                            <div class="inner-panel">
+                                <h5><code>SessionModels.swift</code></h5>
+                                <ul class="note-list">
+                                    <li><strong>Types:</strong> <code>DeviceRole</code>, <code>DeviceType</code>, <code>StoredDeviceContext</code>, <code>ActiveDeviceSession</code></li>
+                                    <li><strong>Does:</strong> local paired-device state and in-memory active session data</li>
+                                </ul>
+                            </div>
+                            <div class="inner-panel">
+                                <h5><code>ManageItError.swift</code></h5>
+                                <ul class="note-list">
+                                    <li><strong>Type:</strong> <code>ManageItError</code></li>
+                                    <li><strong>Cases:</strong> invalid server, invalid pairing, pairing cancelled, pairing expired, invalid response, transport failure, backend failure, device identity unavailable, secure storage failed</li>
+                                    <li><strong>Does:</strong> current app-wide user-facing error vocabulary</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
+                <details>
+                    <summary>
+                        <div class="summary-left">
+                            <h4>Storage, Utilities, And Theme</h4>
+                            <p><code>KeychainStore.swift</code>, <code>AppPreferences.swift</code>, <code>DeviceMetadata.swift</code>, and <code>AppTheme.swift</code></p>
+                        </div>
+                        <span class="summary-icon">06</span>
+                    </summary>
+                    <div class="details-body">
+                        <div class="grid-two">
+                            <div class="inner-panel">
+                                <h5>Storage</h5>
+                                <ul class="note-list">
+                                    <li><strong><code>KeychainStore</code></strong>: stores the refresh token and the stable installation identity</li>
+                                    <li><strong>Functions:</strong> <code>saveRefreshToken(_:)</code>, <code>loadOrCreateInstallationId()</code>, <code>clearRefreshToken()</code></li>
+                                    <li><strong><code>AppPreferences</code></strong>: stores the remembered server address and <code>StoredDeviceContext</code> in <code>UserDefaults</code> as recoverable local cache</li>
+                                    <li><strong>Functions:</strong> <code>serverAddress</code>, <code>loadDeviceContext()</code>, <code>saveDeviceContext(_:)</code>, <code>clearDeviceContext()</code></li>
+                                </ul>
+                            </div>
+                            <div class="inner-panel">
+                                <h5>Utilities And Theme</h5>
+                                <ul class="note-list">
+                                    <li><strong><code>DeviceMetadata</code></strong>: builds pairing payload metadata from the current phone</li>
+                                    <li><strong>Functions:</strong> <code>current(installationId:)</code>, <code>machineIdentifier()</code></li>
+                                    <li><strong><code>AppTheme</code></strong> and <strong><code>MuseumPanelModifier</code></strong>: current palette and shared panel styling</li>
+                                    <li><strong><code>View.museumPanel()</code></strong>: shared card styling modifier</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                </details>
+            </section>
+
+            <section class="section" id="current-api">
+                <div class="section-header">
+                    <div>
+                        <h3>Implemented Backend Contract</h3>
+                        <p>This is the backend surface the current iPhone app already calls today. It is pairing-only.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint-grid">
+                    <article class="endpoint-card">
+                        <div class="endpoint-top">
+                            <span class="method post">POST</span>
+                            <div class="endpoint-path">/api/mobile/pairings/scan</div>
+                        </div>
+                        <ul class="endpoint-list">
+                            <li><strong>Request:</strong> <code>pairingToken</code>, <code>installationId</code>, <code>suggestedName</code>, <code>platformName</code>, <code>platformVersion</code>, <code>modelName</code></li>
+                            <li><strong>Returns:</strong> <code>MobilePairingStatusResponse</code></li>
+                            <li><strong>Does:</strong> submits the scanned QR pairing token and device metadata</li>
+                        </ul>
+                    </article>
+
+                    <article class="endpoint-card">
+                        <div class="endpoint-top">
+                            <span class="method get">GET</span>
+                            <div class="endpoint-path">/api/mobile/pairings/{id}</div>
+                        </div>
+                        <ul class="endpoint-list">
+                            <li><strong>Request body:</strong> none</li>
+                            <li><strong>Returns:</strong> <code>MobilePairingStatusResponse</code></li>
+                            <li><strong>Does:</strong> polls the pairing session until completed, cancelled, or expired</li>
+                        </ul>
+                    </article>
+
+                    <article class="endpoint-card">
+                        <div class="endpoint-top">
+                            <span class="method post">POST</span>
+                            <div class="endpoint-path">/api/mobile/pairings/{id}/complete</div>
+                        </div>
+                        <ul class="endpoint-list">
+                            <li><strong>Request body:</strong> none</li>
+                            <li><strong>Returns:</strong> <code>MobilePairingCompleteResponse</code></li>
+                            <li><strong>Does:</strong> exchanges a completed pairing for device session material and tokens</li>
+                        </ul>
+                    </article>
+
+                    <article class="endpoint-card">
+                        <div class="endpoint-top">
+                            <span class="method">Error</span>
+                            <div class="endpoint-path">Standard Error Envelope</div>
+                        </div>
+                        <ul class="endpoint-list">
+                            <li><strong>Shape:</strong> <code>{ error: { code, message, details } }</code></li>
+                            <li><strong>Current client support:</strong> decodes <code>code</code> and <code>message</code>; ignores <code>details</code></li>
+                        </ul>
+                    </article>
+                </div>
+            </section>
+
+            <section class="section" id="part2">
+                <div class="section-header">
+                    <div>
+                        <h3>Part II. Required Prototype Completion Spec</h3>
+                        <p>This is the "should be implemented" part. If a new iOS developer is continuing the app, this is where they should start.</p>
+                    </div>
+                </div>
+
+                <div class="banner">
+                    <strong>Start here:</strong> first implement session bootstrap, then inventory browsing, then item editing and planning, then admin location actions, then movement and history.
+                </div>
+            </section>
+
+            <section class="section" id="required-api">
+                <div class="section-header">
+                    <div>
+                        <h3>Required Shared Backend Contract</h3>
+                        <p>This is the backend contract the finished prototype iPhone app must support, based on the shared architecture documentation.</p>
+                    </div>
+                </div>
+
+                <div class="endpoint-grid">
+                    <article class="endpoint-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Auth</span>
+                        </div>
+                        <h4>Device Session Endpoints</h4>
+                        <ul class="endpoint-list">
+                            <li><strong>POST</strong> <code>/api/auth/refresh</code> with <code>{ refreshToken }</code></li>
+                            <li><strong>POST</strong> <code>/api/auth/logout</code></li>
+                            <li><strong>GET</strong> <code>/api/auth/me</code></li>
+                            <li><strong>Why:</strong> required for launch restore, logout, and authenticated session verification</li>
+                        </ul>
+                    </article>
+
+                    <article class="endpoint-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Inventory</span>
+                        </div>
+                        <h4>Item Endpoints</h4>
+                        <ul class="endpoint-list">
+                            <li><strong>GET</strong> <code>/api/items</code></li>
+                            <li><strong>GET</strong> <code>/api/items/{id}</code></li>
+                            <li><strong>POST</strong> <code>/api/items</code></li>
+                            <li><strong>PUT</strong> <code>/api/items/{id}</code></li>
+                            <li><strong>PATCH</strong> <code>/api/items/{id}/planning</code></li>
+                            <li><strong>POST</strong> <code>/api/items/{id}/archive</code></li>
+                            <li><strong>GET</strong> <code>/api/items/conflicts/main-number</code></li>
+                        </ul>
+                    </article>
+
+                    <article class="endpoint-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Lookups</span>
+                        </div>
+                        <h4>Lookup Endpoints</h4>
+                        <ul class="endpoint-list">
+                            <li><strong>Locations:</strong> <code>GET</code>, <code>POST</code>, <code>PUT</code>, <code>POST archive</code></li>
+                            <li><strong>Authors:</strong> <code>GET</code>, <code>POST</code></li>
+                            <li><strong>Organizations:</strong> <code>GET</code>, <code>POST</code></li>
+                            <li><strong>Why:</strong> required for selectors, create-on-the-fly flows, and admin location management</li>
+                        </ul>
+                    </article>
+
+                    <article class="endpoint-card">
+                        <div class="badge-row">
+                            <span class="badge blocked">Blocked</span>
+                        </div>
+                        <h4>Movement And History Endpoints</h4>
+                        <ul class="endpoint-list">
+                            <li><strong>POST</strong> <code>/api/items/{id}/movements</code></li>
+                            <li><strong>GET</strong> <code>/api/items/{id}/history</code></li>
+                            <li><strong>Current issue:</strong> request examples exist, but final success DTOs are not fully specified in source-of-truth docs</li>
+                        </ul>
+                    </article>
+                </div>
+            </section>
+
+            <section class="section" id="feature-blocks">
+                <div class="section-header">
+                    <div>
+                        <h3>Key Feature Blocks</h3>
+                        <p>Each block below is one major implementation area. These are the feature-by-feature build targets for the unfinished prototype app. Unless a file is already documented in Part I, treat file paths in planned blocks as files to create later.</p>
+                    </div>
+                </div>
+
+                <div class="feature-grid">
+                    <article class="feature-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Root App</span>
+                        </div>
+                        <h4>Root App State And Routing</h4>
+                        <p>The app must stop routing by <code>pairedDevice != nil</code> alone, move to real runtime phases, and host the finished authenticated app inside a tab bar root.</p>
+                        <div class="list-title">Files</div>
+                        <ul class="pill-list">
+                            <li><code>AppModel.swift</code></li>
+                            <li><code>ContentView.swift</code></li>
+                        </ul>
+                        <div class="list-title">Types</div>
+                        <ul class="pill-list">
+                            <li><code>AppPhase</code></li>
+                            <li><code>BootstrapView</code></li>
+                            <li><code>SessionRecoveryView</code></li>
+                            <li><code>AuthenticatedRootView</code></li>
+                        </ul>
+                        <div class="list-title">Functions</div>
+                        <ul class="pill-list">
+                            <li><code>restoreSessionOnLaunch()</code></li>
+                            <li><code>activatePairedDevice(response:serverAddress:)</code></li>
+                            <li><code>applyRefreshedSession(_:)</code></li>
+                            <li><code>handleSessionInvalidation(clearLocalPairing:)</code></li>
+                            <li><code>logoutCurrentDevice()</code></li>
+                        </ul>
+                    </article>
+
+                    <article class="feature-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Session</span>
+                        </div>
+                        <h4>Session Restore And Logout</h4>
+                        <p>Launch-time refresh, in-memory access token handling, backend logout, and revoked-session fallback all belong here. The persistence boundary is fixed: refresh token plus stable installation identity in Keychain, recoverable summary cache in <code>UserDefaults</code>.</p>
+                        <div class="list-title">Files</div>
+                        <ul class="pill-list">
+                            <li><code>Features/Session/DeviceSessionModel.swift</code></li>
+                            <li><code>Models/AuthModels.swift</code></li>
+                            <li><code>Storage/KeychainStore.swift</code></li>
+                        </ul>
+                        <div class="list-title">Types</div>
+                        <ul class="pill-list">
+                            <li><code>DeviceSessionModel</code></li>
+                            <li><code>DeviceTokenRefreshRequest</code></li>
+                            <li><code>DeviceTokenRefreshResponse</code></li>
+                            <li><code>DeviceSessionStatusResponse</code></li>
+                            <li><code>SessionRecoveryReason</code></li>
+                        </ul>
+                        <div class="list-title">Functions</div>
+                        <ul class="pill-list">
+                            <li><code>restore(storedContext:)</code></li>
+                            <li><code>ensureValidAccessToken(storedContext:)</code></li>
+                            <li><code>refresh(storedContext:)</code></li>
+                            <li><code>fetchCurrentDeviceStatus(storedContext:)</code></li>
+                            <li><code>logout(storedContext:)</code></li>
+                        </ul>
+                    </article>
+
+                    <article class="feature-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Inventory</span>
+                        </div>
+                        <h4>Inventory List And Detail</h4>
+                        <p>The authenticated entry branch of the app starts here after successful restore or pairing.</p>
+                        <div class="list-title">Files</div>
+                        <ul class="pill-list">
+                            <li><code>Features/Inventory/InventoryFeature.swift</code></li>
+                            <li><code>Features/Inventory/InventoryFeatureModel.swift</code></li>
+                            <li><code>Features/Inventory/ItemDetailFeature.swift</code></li>
+                            <li><code>Features/Inventory/ItemDetailFeatureModel.swift</code></li>
+                        </ul>
+                        <div class="list-title">Functions</div>
+                        <ul class="pill-list">
+                            <li><code>loadFirstPage()</code></li>
+                            <li><code>reload()</code></li>
+                            <li><code>loadNextPageIfNeeded(currentItemID:)</code></li>
+                            <li><code>updateSearchText(_:)</code></li>
+                            <li><code>load()</code> on item detail</li>
+                            <li><code>archiveItem()</code> for admin detail actions</li>
+                        </ul>
+                    </article>
+
+                    <article class="feature-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Item Editor</span>
+                        </div>
+                        <h4>Create And Edit Items</h4>
+                        <p>This block covers item metadata, initial location, secondary numbers, author selection, and duplicate-number handling.</p>
+                        <div class="list-title">Files</div>
+                        <ul class="pill-list">
+                            <li><code>Features/ItemEditor/ItemEditorFeature.swift</code></li>
+                            <li><code>Features/ItemEditor/ItemEditorFeatureModel.swift</code></li>
+                            <li><code>Models/InventoryModels.swift</code></li>
+                            <li><code>Models/LookupModels.swift</code></li>
+                        </ul>
+                        <div class="list-title">Functions</div>
+                        <ul class="pill-list">
+                            <li><code>loadCreateDependencies()</code></li>
+                            <li><code>hydrateForEdit(from:)</code></li>
+                            <li><code>searchAuthors(query:)</code></li>
+                            <li><code>createAuthor(name:)</code></li>
+                            <li><code>checkMainNumberConflict()</code></li>
+                            <li><code>buildCreateRequest()</code></li>
+                            <li><code>buildUpdateRequest()</code></li>
+                            <li><code>submit()</code></li>
+                        </ul>
+                    </article>
+
+                    <article class="feature-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Planning</span>
+                        </div>
+                        <h4>Planning Editor</h4>
+                        <p>Promised organization and expected leave date are a separate planning surface and must not create history rows by themselves.</p>
+                        <div class="list-title">Files</div>
+                        <ul class="pill-list">
+                            <li><code>Features/ItemEditor/PlanningEditorFeature.swift</code></li>
+                            <li><code>Features/ItemEditor/PlanningEditorFeatureModel.swift</code></li>
+                        </ul>
+                        <div class="list-title">Functions</div>
+                        <ul class="pill-list">
+                            <li><code>hydrate(from:)</code></li>
+                            <li><code>searchOrganizations(query:)</code></li>
+                            <li><code>createOrganization(name:)</code></li>
+                            <li><code>buildRequest()</code></li>
+                            <li><code>submit()</code></li>
+                        </ul>
+                    </article>
+
+                    <article class="feature-card blocked-card">
+                        <div class="badge-row">
+                            <span class="badge blocked">Blocked In Part</span>
+                        </div>
+                        <h4>Movement, Rental, Return, And History</h4>
+                        <p>The UI and request models can be built, but the final response models remain blocked until the backend success DTOs are explicitly decided.</p>
+                        <div class="list-title">Files</div>
+                        <ul class="pill-list">
+                            <li><code>Features/History/MovementFeature.swift</code></li>
+                            <li><code>Features/History/MovementFeatureModel.swift</code></li>
+                            <li><code>Features/History/ItemHistoryFeature.swift</code></li>
+                            <li><code>Features/History/ItemHistoryFeatureModel.swift</code></li>
+                            <li><code>Models/HistoryModels.swift</code></li>
+                        </ul>
+                        <div class="list-title">Functions</div>
+                        <ul class="pill-list">
+                            <li><code>loadDependencies()</code></li>
+                            <li><code>searchOrganizations(query:)</code></li>
+                            <li><code>createOrganization(name:)</code></li>
+                            <li><code>buildRequest()</code></li>
+                            <li><code>submit()</code></li>
+                            <li><code>load()</code> on item history</li>
+                        </ul>
+                        <div class="list-title">Blocked</div>
+                        <ul class="note-list">
+                            <li>Final success model for <code>POST /api/items/{id}/movements</code></li>
+                            <li>Final response model for <code>GET /api/items/{id}/history</code></li>
+                        </ul>
+                    </article>
+
+                    <article class="feature-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Admin</span>
+                        </div>
+                        <h4>Admin Location Management</h4>
+                        <p>Because approved <code>ADMIN</code> devices have extra LAN powers, the iPhone app must include location management if the prototype is to be considered complete.</p>
+                        <div class="list-title">Files</div>
+                        <ul class="pill-list">
+                            <li><code>Features/Inventory/LocationManagementFeature.swift</code></li>
+                            <li><code>Features/Inventory/LocationManagementFeatureModel.swift</code></li>
+                        </ul>
+                        <div class="list-title">Functions</div>
+                        <ul class="pill-list">
+                            <li><code>load()</code></li>
+                            <li><code>createLocation()</code></li>
+                            <li><code>renameLocation(locationID:)</code></li>
+                            <li><code>archiveLocation(locationID:)</code></li>
+                        </ul>
+                    </article>
+
+                    <article class="feature-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Networking</span>
+                        </div>
+                        <h4>Full API Client Surface</h4>
+                        <p>The current client is pairing-only. The finished app needs a public bootstrap path and a bearer-authenticated device path.</p>
+                        <div class="list-title">Files</div>
+                        <ul class="pill-list">
+                            <li><code>Networking/ManageItAPIClient.swift</code></li>
+                        </ul>
+                        <div class="list-title">Functions</div>
+                        <ul class="pill-list">
+                            <li><code>refreshDeviceSession(serverURL:request:)</code></li>
+                            <li><code>fetchCurrentSession(serverURL:accessToken:)</code></li>
+                            <li><code>logoutCurrentSession(serverURL:accessToken:)</code></li>
+                            <li><code>fetchItems(...)</code>, <code>fetchItem(...)</code>, <code>createItem(...)</code>, <code>updateItem(...)</code></li>
+                            <li><code>updateItemPlanning(...)</code>, <code>archiveItem(...)</code>, <code>checkMainInventoryNumberConflict(...)</code></li>
+                            <li><code>fetchLocations(...)</code>, <code>createLocation(...)</code>, <code>fetchAuthors(...)</code>, <code>fetchOrganizations(...)</code></li>
+                            <li><code>sendAuthenticatedRequest(...)</code></li>
+                        </ul>
+                    </article>
+
+                    <article class="feature-card">
+                        <div class="badge-row">
+                            <span class="badge planned">Models</span>
+                        </div>
+                        <h4>Shared Data Models</h4>
+                        <p>The final app needs a much broader model layer than today, especially for auth restore, inventory, lookups, and business dates.</p>
+                        <div class="list-title">Files</div>
+                        <ul class="pill-list">
+                            <li><code>Models/AuthModels.swift</code></li>
+                            <li><code>Models/BusinessDate.swift</code></li>
+                            <li><code>Models/InventoryModels.swift</code></li>
+                            <li><code>Models/LookupModels.swift</code></li>
+                            <li><code>Models/HistoryModels.swift</code></li>
+                        </ul>
+                        <div class="list-title">Important Types</div>
+                        <ul class="pill-list">
+                            <li><code>BusinessDate</code></li>
+                            <li><code>ItemResponse</code></li>
+                            <li><code>ItemListResponse</code></li>
+                            <li><code>ItemCreateRequest</code></li>
+                            <li><code>ItemPlanningUpdateRequest</code></li>
+                            <li><code>ItemMovementCreateRequest</code></li>
+                            <li><code>LocationResponse</code>, <code>AuthorResponse</code>, <code>OrganizationResponse</code></li>
+                        </ul>
+                    </article>
+
+                    <article class="feature-card">
+                        <div class="badge-row">
+                            <span class="badge warning">Required Quality</span>
+                        </div>
+                        <h4>Testing And QA</h4>
+                        <p>The prototype is not done with implementation alone. It needs explicit test coverage and real-device LAN verification.</p>
+                        <div class="list-title">Must Add</div>
+                        <ul class="pill-list">
+                            <li>Parsing and URL-normalization tests</li>
+                            <li>Bootstrap and session-state transition tests</li>
+                            <li>Business-date codec tests</li>
+                            <li>Request and response decoding tests</li>
+                            <li>Simulator QA</li>
+                            <li>Real-iPhone LAN QA</li>
+                        </ul>
+                    </article>
+                </div>
+            </section>
+
+            <section class="section" id="build-order">
+                <div class="section-header">
+                    <div>
+                        <h3>Build Order</h3>
+                        <p>Recommended implementation sequence for the next iOS developer.</p>
+                    </div>
+                </div>
+
+                <div class="timeline-card">
+                    <ol class="timeline">
+                        <li><strong>Finish session bootstrap.</strong> Expand <code>AppModel</code>, add <code>DeviceSessionModel</code>, add auth DTOs, and implement refresh/logout/me support.</li>
+                        <li><strong>Finish inventory browsing.</strong> Add inventory models, list UI, detail UI, and authenticated entry routing into the inventory branch.</li>
+                        <li><strong>Finish item create and item edit.</strong> Add <code>BusinessDate</code>, editor state models, author lookup, location lookup, and duplicate-number handling.</li>
+                        <li><strong>Finish planning updates.</strong> Add promised-organization search/create and expected-leave-date editing.</li>
+                        <li><strong>Finish admin item and location actions.</strong> Add archive item support and admin-only location management.</li>
+                        <li><strong>Finish movement and history.</strong> Add movement request UI and history UI once the final backend response DTOs are confirmed.</li>
+                        <li><strong>Finish tests and QA.</strong> Add targeted unit tests and verify the full LAN flow on a real iPhone.</li>
+                    </ol>
+                </div>
+            </section>
+
+            <section class="section" id="blockers">
+                <div class="section-header">
+                    <div>
+                        <h3>Part III. Open Decisions And Blockers</h3>
+                        <p>Only these backend response contracts still need confirmation. The Keychain boundary and the authenticated tab-bar shell are already decided for the current handoff.</p>
+                    </div>
+                </div>
+
+                <div class="blocker-grid">
+                    <article class="feature-card blocked-card">
+                        <div class="badge-row">
+                            <span class="badge blocked">Blocked</span>
+                        </div>
+                        <h4>Movement Success DTO</h4>
+                        <p>The final success response contract for <code>POST /api/items/{id}/movements</code> is not fully specified.</p>
+                    </article>
+
+                    <article class="feature-card blocked-card">
+                        <div class="badge-row">
+                            <span class="badge blocked">Blocked</span>
+                        </div>
+                        <h4>History Response DTO</h4>
+                        <p>The final response model for <code>GET /api/items/{id}/history</code> is not fully specified.</p>
+                    </article>
+
+                </div>
+            </section>
+
+            <div class="footer-note">
+                Source files for this HTML handoff page are the current architecture docs and <code>documentation/ios_front_technical_spec.md</code>. Markdown stays authoritative; this HTML page is kept in sync as a reading companion and is intentionally structured for human scanning: current implementation first, required implementation second, blockers last.
+            </div>
+        </main>
+    </div>
+</body>
+</html>
