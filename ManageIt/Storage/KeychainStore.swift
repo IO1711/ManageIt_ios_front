@@ -10,6 +10,15 @@ final class KeychainStore {
         try saveString(refreshToken, account: refreshTokenAccount)
     }
 
+    func loadRefreshToken() throws -> String? {
+        try loadString(account: refreshTokenAccount)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func clearAuthenticatedMaterial() {
+        clearValue(account: refreshTokenAccount)
+    }
+
     func loadOrCreateInstallationId() throws -> UUID {
         if
             let storedValue = try loadString(account: installationIdAccount)?

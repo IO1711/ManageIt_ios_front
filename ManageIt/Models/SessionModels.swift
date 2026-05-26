@@ -5,8 +5,13 @@ enum DeviceRole: String, Codable, Equatable {
     case editor = "EDITOR"
 
     var displayName: String {
-        rawValue.capitalized
+        switch self {
+        case .admin: return "Admin"
+        case .editor: return "Editor"
+        }
     }
+
+    var isAdmin: Bool { self == .admin }
 }
 
 enum DeviceType: String, Codable, Equatable {
@@ -26,14 +31,28 @@ enum DeviceType: String, Codable, Equatable {
 struct StoredDeviceContext: Codable, Equatable {
     let serverAddress: String
     let deviceId: UUID
-    let role: DeviceRole
+    var role: DeviceRole
     let deviceType: DeviceType
-    let friendlyName: String
-    let refreshTokenExpiresAt: Date
+    var friendlyName: String
+    var refreshTokenExpiresAt: Date
+
+    func serverURL() throws -> URL {
+        var address = serverAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        if address.isEmpty {
+            throw ManageItError.invalidServerAddress
+        }
+        if !address.contains("://") {
+            address = "http://\(address)"
+        }
+        guard let url = URL(string: address) else {
+            throw ManageItError.invalidServerAddress
+        }
+        return url
+    }
 }
 
 struct ActiveDeviceSession: Equatable {
-    let context: StoredDeviceContext
-    let accessToken: String
-    let accessTokenExpiresAt: Date
+    var context: StoredDeviceContext
+    var accessToken: String
+    var accessTokenExpiresAt: Date
 }

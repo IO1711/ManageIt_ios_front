@@ -1,12 +1,22 @@
 import Foundation
 import Observation
 
+enum AppPhase: Equatable {
+    case bootstrapping
+    case pairing
+    case restoring
+    case active
+    case sessionRecovery
+}
+
 @MainActor
 @Observable
 final class AppModel {
+    var appPhase: AppPhase = .bootstrapping
     var pairedDevice: StoredDeviceContext?
-    var activeSession: ActiveDeviceSession?
-    let pairingModel: PairingFeatureModel
+    var pairingModel: PairingFeatureModel
+    var sessionModel: DeviceSessionModel
+    var inventoryModel: InventoryFeatureModel?
 
     @ObservationIgnored
     private let preferences: AppPreferences
@@ -14,35 +24,89 @@ final class AppModel {
     @ObservationIgnored
     private let keychainStore: KeychainStore
 
+    @ObservationIgnored
+    private let apiClient: ManageItAPIClient
+
+    @ObservationIgnored
+    private var restoreTask: Task<Void, Never>?
+
     init() {
         let preferences = AppPreferences()
         let keychainStore = KeychainStore()
-        let apiClient = ManageItAPIClient()
+
+        let urlSession: URLSession = {
+            let configuration = URLSessionConfiguration.default
+            #if DEBUG
+            var classes = configuration.protocolClasses ?? []
+            classes.insert(DemoAPIProtocol.self, at: 0)
+            configuration.protocolClasses = classes
+            #endif
+            return URLSession(configuration: configuration)
+        }()
+        let apiClient = ManageItAPIClient(urlSession: urlSession)
 
         self.preferences = preferences
         self.keychainStore = keychainStore
-        self.pairedDevice = preferences.loadDeviceContext()
-        self.activeSession = nil
+        self.apiClient = apiClient
+
+        let storedContext = preferences.loadDeviceContext()
+        self.pairedDevice = storedContext
+
+        #if DEBUG
+        if let stored = storedContext, stored.serverAddress == DemoAPIProtocol.demoServerAddress {
+            DemoAPIProtocol.enable()
+        }
+        #endif
+
+        self.sessionModel = DeviceSessionModel(
+            apiClient: apiClient,
+            keychainStore: keychainStore
+        )
         self.pairingModel = PairingFeatureModel(
             apiClient: apiClient,
             keychainStore: keychainStore,
             initialServerAddress: preferences.serverAddress
         )
 
+        if storedContext == nil {
+            self.appPhase = .pairing
+        }
+
         pairingModel.onActivationComplete = { [weak self] response, serverAddress in
-            try self?.storeActivatedDevice(response: response, serverAddress: serverAddress)
+            try self?.activatePairedDevice(response: response, serverAddress: serverAddress)
         }
     }
 
-    func clearLocalPairing() {
-        keychainStore.clearRefreshToken()
-        preferences.clearDeviceContext()
-        activeSession = nil
-        pairedDevice = nil
-        pairingModel.reset(keepServerAddress: true)
+    var activeSession: ActiveDeviceSession? {
+        sessionModel.activeSession
     }
 
-    private func storeActivatedDevice(
+    func bootIfNeeded() {
+        guard restoreTask == nil else { return }
+        restoreTask = Task { [weak self] in
+            await self?.restoreSessionOnLaunch()
+        }
+    }
+
+    func restoreSessionOnLaunch() async {
+        guard let storedContext = pairedDevice else {
+            appPhase = .pairing
+            return
+        }
+
+        appPhase = .restoring
+
+        do {
+            let session = try await sessionModel.restore(storedContext: storedContext)
+            updatePersistedContext(from: session)
+            inventoryModel = makeInventoryModel(for: session.context)
+            appPhase = .active
+        } catch {
+            appPhase = .sessionRecovery
+        }
+    }
+
+    func activatePairedDevice(
         response: MobilePairingCompleteResponse,
         serverAddress: String
     ) throws {
@@ -64,10 +128,106 @@ final class AppModel {
         preferences.serverAddress = serverAddress
         preferences.saveDeviceContext(context)
         pairedDevice = context
-        activeSession = ActiveDeviceSession(
+
+        let session = ActiveDeviceSession(
             context: context,
             accessToken: response.accessToken,
             accessTokenExpiresAt: response.accessTokenExpiresAt
+        )
+        sessionModel.adopt(activeSession: session)
+        inventoryModel = makeInventoryModel(for: context)
+        appPhase = .active
+    }
+
+    func applyRefreshedSession(_ session: ActiveDeviceSession) {
+        pairedDevice = session.context
+        preferences.saveDeviceContext(session.context)
+        if inventoryModel == nil {
+            inventoryModel = makeInventoryModel(for: session.context)
+        } else {
+            inventoryModel?.updateStoredContext(session.context)
+        }
+    }
+
+    func handleSessionInvalidation(clearLocalPairing: Bool) {
+        sessionModel.clear()
+        inventoryModel = nil
+        if clearLocalPairing {
+            clearAllLocalPairing()
+        } else {
+            appPhase = .sessionRecovery
+        }
+    }
+
+    func logoutCurrentDevice() async {
+        if let context = pairedDevice {
+            await sessionModel.logout(storedContext: context)
+        }
+        clearAllLocalPairing()
+    }
+
+    func clearAllLocalPairing() {
+        keychainStore.clearAuthenticatedMaterial()
+        preferences.clearDeviceContext()
+        sessionModel.clear()
+        inventoryModel = nil
+        pairedDevice = nil
+        pairingModel.reset(keepServerAddress: true)
+        appPhase = .pairing
+    }
+
+    func retryRestore() {
+        restoreTask?.cancel()
+        restoreTask = Task { [weak self] in
+            await self?.restoreSessionOnLaunch()
+        }
+    }
+
+    #if DEBUG
+    /// Bypasses real pairing by enabling the in-memory `DemoAPIProtocol` and seeding
+    /// a fake ADMIN device context. The normal restore flow then drives everything
+    /// through canned demo responses so all screens become navigable without a backend.
+    func activateDemoMode() {
+        DemoAPIProtocol.enable()
+
+        let context = StoredDeviceContext(
+            serverAddress: DemoAPIProtocol.demoServerAddress,
+            deviceId: UUID(uuidString: "11111111-1111-1111-1111-111111111111") ?? UUID(),
+            role: .admin,
+            deviceType: .iosApp,
+            friendlyName: "Demo iPhone",
+            refreshTokenExpiresAt: Date().addingTimeInterval(60 * 60 * 24 * 30)
+        )
+
+        try? keychainStore.saveRefreshToken("demo-refresh-token")
+        preferences.serverAddress = context.serverAddress
+        preferences.saveDeviceContext(context)
+        pairedDevice = context
+
+        retryRestore()
+    }
+    #endif
+
+    // MARK: -
+
+    private func updatePersistedContext(from session: ActiveDeviceSession) {
+        pairedDevice = session.context
+        preferences.saveDeviceContext(session.context)
+    }
+
+    private func makeInventoryModel(for context: StoredDeviceContext) -> InventoryFeatureModel {
+        InventoryFeatureModel(
+            storedContext: context,
+            sessionModel: sessionModel,
+            apiClient: apiClient,
+            preferences: preferences,
+            onContextUpdated: { [weak self] updated in
+                self?.pairedDevice = updated
+                self?.preferences.saveDeviceContext(updated)
+            },
+            onSessionInvalidated: { [weak self] in
+                self?.handleSessionInvalidation(clearLocalPairing: false)
+            }
         )
     }
 }

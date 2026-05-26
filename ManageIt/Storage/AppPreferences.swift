@@ -4,6 +4,7 @@ final class AppPreferences {
     private enum Keys {
         static let serverAddress = "manageit.serverAddress"
         static let pairedDeviceContext = "manageit.pairedDeviceContext"
+        static let lastInventoryQuery = "manageit.lastInventoryQuery"
     }
 
     private let userDefaults: UserDefaults
@@ -39,5 +40,19 @@ final class AppPreferences {
 
     func clearDeviceContext() {
         userDefaults.removeObject(forKey: Keys.pairedDeviceContext)
+    }
+
+    func clearAllLocalContext() {
+        userDefaults.removeObject(forKey: Keys.pairedDeviceContext)
+        userDefaults.removeObject(forKey: Keys.serverAddress)
+        userDefaults.removeObject(forKey: Keys.lastInventoryQuery)
+    }
+
+    func saveLastInventoryQuery(_ query: String) {
+        userDefaults.set(query, forKey: Keys.lastInventoryQuery)
+    }
+
+    func loadLastInventoryQuery() -> String {
+        userDefaults.string(forKey: Keys.lastInventoryQuery) ?? ""
     }
 }

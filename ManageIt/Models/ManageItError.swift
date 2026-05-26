@@ -10,6 +10,9 @@ enum ManageItError: LocalizedError {
     case backend(code: String, message: String)
     case deviceIdentityUnavailable
     case secureStorageFailed
+    case unauthorized
+    case deviceRevoked
+    case validationError(String)
 
     var errorDescription: String? {
         switch self {
@@ -35,6 +38,12 @@ enum ManageItError: LocalizedError {
             return "The iPhone could not create or read its stable installation identity from Keychain."
         case .secureStorageFailed:
             return "The iPhone received device credentials but could not save them securely in Keychain."
+        case .unauthorized:
+            return "This session is no longer authorized. Please re-pair this device."
+        case .deviceRevoked:
+            return "This device has been revoked by the host admin."
+        case .validationError(let message):
+            return message
         }
     }
 }
