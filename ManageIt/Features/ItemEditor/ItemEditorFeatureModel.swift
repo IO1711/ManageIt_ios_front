@@ -106,7 +106,7 @@ final class ItemEditorFeatureModel: Identifiable {
             let locations = try await authenticated.perform { url, token in
                 try await self.apiClient.fetchLocations(serverURL: url, accessToken: token, includeArchived: false)
             }
-            self.availableLocations = locations
+            self.availableLocations = assignableLocations(from: locations)
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }

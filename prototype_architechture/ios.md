@@ -7,6 +7,8 @@
 | `URLSession` | HTTP networking |
 | `Keychain Services` | Secure storage for the refresh token, the stable installation identity, and any future persisted authenticator material |
 | `AVFoundation` | QR code scanning |
+| `UserNotifications` | Local exhibition end and rental return reminders |
+| `Persistent local app storage` | Cached location hierarchy, cached item context, and dedicated offline-movement outbox |
 | `Foundation` | Models, dates, formatting, decoding |
 
 ### 6.2 iPhone registration flow
@@ -44,12 +46,26 @@ Recommended modules:
   - item list
   - search
   - item detail
+- `Exhibitions`
+  - exhibition list/detail
+  - create/edit exhibition
+  - past exhibition history
 - `ItemEditor`
   - create/edit item
   - planning updates
   - movement/rental events
 - `History`
   - per-item history screen
+  - moved-by device display
+- `Notifications`
+  - local exhibition end reminders
+  - local rental return reminders
+  - reschedule on date edits
+  - cancel on returns or permission changes
+- `OfflineSync`
+  - cached location hierarchy for offline selectors
+  - dedicated offline-movement outbox
+  - replay queued movements when server connectivity returns
 - `Networking`
   - API client
   - request builders
@@ -77,8 +93,11 @@ iOSApp
     /Pairing
     /Session
     /Inventory
+    /Exhibitions
     /ItemEditor
     /History
+    /Notifications
+    /OfflineSync
   /Networking
   /Models
   /Storage
@@ -96,8 +115,34 @@ iOSApp
 - keep the stable `installationId` in Keychain across re-pairings
 - keep access token in memory
 - keep recoverable paired-device summary data outside Keychain unless it can authenticate the device by itself
+- cache the latest successful location hierarchy locally for offline movement selection
+- keep a dedicated persistent offline-movement outbox
+- show planned/active/ended exhibitions and their linked item groups
+- show moved-by device friendly name in history views when available
+- schedule local exhibition-end reminders from the latest exhibition `endDate`
+- schedule local rental-return reminders 3 calendar days before the latest open external `expectedReturnDate`
+- reschedule or cancel local exhibition reminders when exhibition dates or local notification permissions change
+- reschedule or cancel local rental reminders when expected return dates change, rentals close, or local notification permissions change
+- allow offline movement only for:
+  - internal move
+  - return to internal location
+  - send to external only when the item already has synced planning data from an earlier online state
+- do not allow offline planning changes
+- do not allow more than one unsynchronized offline movement per item
+- synchronize offline movements only from the dedicated outbox storage
+- include the item's expected current source placement when replaying an offline movement to the server
+- surface queued or rejected offline movements clearly in the UI
 - refresh session when needed
 - go directly to inventory list on future launches unless revoked
+
+### 10.3.1 iPhone offline movement prototype rules
+
+- The iPhone prototype may cache read data, but only offline movement writes are supported in this phase.
+- Offline movement depends on the latest successfully cached location hierarchy.
+- The offline outbox is the only source of synchronization for queued movements.
+- If an item already has one unsynchronized movement in the outbox, the iPhone must block queuing another one for that same item.
+- When connectivity to the server returns, the iPhone should replay queued movement rows from the outbox and then refresh affected item data from the server.
+- If the server rejects a replay because the queued expected source placement no longer matches the current database state, the iPhone should keep that outbox row as rejected/stale for user review instead of silently dropping it.
 
 ### 10.4 Working instructions for this iPhone prototype
 

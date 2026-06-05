@@ -186,7 +186,7 @@ struct ItemEditorView: View {
                 )) {
                     Text("Select location").tag(Int64(-1))
                     ForEach(store.availableLocations) { location in
-                        Text(location.name).tag(location.id)
+                        Text(location.displayLabel).tag(location.id)
                     }
                 }
                 .labelsHidden()

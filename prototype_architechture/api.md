@@ -121,8 +121,12 @@ Notes:
 
 - Web uses refresh token cookie.
 - iPhone sends the refresh token from Keychain through the mobile API client.
+- An authenticated host-admin session may also call any protected non-public API in this service.
+- When the host admin uses a device-facing write API, `*_by_device_id` audit fields remain `null`.
 
-### 11.4 Protected item endpoints
+### 11.4 Protected inventory endpoints
+
+#### Item endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -132,22 +136,76 @@ Notes:
 | `PUT` | `/api/items/{id}` | Edit core item metadata |
 | `PATCH` | `/api/items/{id}/planning` | Update promised org / expected leave date |
 | `POST` | `/api/items/{id}/movements` | Add a new move/rental/return event |
-| `GET` | `/api/items/{id}/history` | Chronological actual history |
+| `GET` | `/api/items/{id}/history` | Chronological actual history with move actor metadata |
 | `POST` | `/api/items/{id}/archive` | Archive item, admin only |
 | `GET` | `/api/items/conflicts/main-number` | Optional UX pre-check helper |
+
+#### Exhibition endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/exhibitions` | List planned/active/ended exhibitions |
+| `POST` | `/api/exhibitions` | Create exhibition and item group |
+| `GET` | `/api/exhibitions/{id}` | Exhibition detail with location and item group |
+| `PUT` | `/api/exhibitions/{id}` | Edit exhibition dates/location/item group |
 
 ### 11.5 Lookup endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/locations` | List active locations for selection |
-| `POST` | `/api/locations` | Create location, admin only |
+| `GET` | `/api/locations` | List active location hierarchy for selection/admin UIs |
+| `POST` | `/api/locations` | Create root or child location, admin only |
 | `PUT` | `/api/locations/{id}` | Rename location, admin only |
 | `POST` | `/api/locations/{id}/archive` | Archive location, admin only |
 | `GET` | `/api/authors` | Search author suggestions |
 | `POST` | `/api/authors` | Create author during item flow |
 | `GET` | `/api/organizations` | Search organization suggestions |
 | `POST` | `/api/organizations` | Create organization during planning/rental flow |
+
+#### Location API contract notes
+
+For location-related APIs:
+
+- locations are hierarchical, not flat
+- names must be unique case-insensitively among siblings under the same parent
+- only leaf locations may be used in item create/move/return flows
+- `POST /api/locations` accepts `name` plus optional `parentLocationId`
+- omitting `parentLocationId` creates a top-level location
+- `PUT /api/locations/{id}` renames only
+- re-parenting an existing location is not supported in the prototype
+- `GET /api/locations` should expose hierarchy metadata needed by clients, such as `id`, `name`, `parentLocationId`, a human-readable full path, and whether the node is assignable
+- the exact transport for `GET /api/locations` may be a nested tree or a flat list with parent references, as long as those semantics are preserved
+
+#### Exhibition API contract notes
+
+For exhibition-related APIs:
+
+- every exhibition points to one internal leaf location
+- `startDate` must be less than or equal to `endDate`
+- the same item cannot belong to two exhibitions whose date ranges overlap
+- during an active exhibition, every linked item must still be `INTERNAL` and have `currentLocationId = locationId`
+- `GET /api/exhibitions` should expose list metadata such as `id`, `name`, `locationId`, `locationPath`, `startDate`, `endDate`, `phase`, and `itemCount`
+- `GET /api/exhibitions/{id}` should expose the full linked item set plus the location path
+- exhibition reminders are client-local only; the backend returns the dates needed for clients to schedule or reschedule reminders, but does not send push reminders
+- when exhibition dates change, clients should replace any previously scheduled local reminder for that exhibition with one based on the latest returned `endDate`
+- exact `EDITOR` versus `ADMIN` write permissions for exhibition create/edit are intentionally left to the security policy and are not fixed in this document
+
+#### Movement and history API contract notes
+
+For movement-related APIs:
+
+- creating a movement row records the authenticated registered device as the actor in `item_history.created_by_device_id`
+- history responses should expose a resolved actor summary such as `movedByDevice.id`, `movedByDevice.friendlyName`, and `movedByDevice.deviceType`
+- when a protected write is performed by the host-admin session rather than a registered device, actor device info may be absent
+- open external rental rows with `expectedReturnDate` are the source for client-local return reminders
+- clients should schedule the rental reminder 3 calendar days before `expectedReturnDate`
+- reminder-capable responses should include enough context for clients to say which item is currently at which organization and that it is due back in 3 days
+- if the open rental row changes `expectedReturnDate` or closes on return, clients should replace or cancel the local reminder from the latest backend data
+- the iPhone offline-movement prototype replays queued movement writes from a dedicated local outbox
+- a replayed offline movement write must include the item's expected current source placement from the iPhone's last known synced state
+- before applying a replayed offline movement, the server must compare that expected source placement with the item's current database state
+- if the server's current item placement does not match the queued expected source placement, the server must reject that replay as stale instead of overwriting newer state
+- offline planning sync is not part of the prototype contract
 
 ### 11.6 Example payloads
 
@@ -261,6 +319,43 @@ Content-Type: application/json
 }
 ```
 
+#### Create child location
+
+```http
+POST /api/locations
+Content-Type: application/json
+Authorization: Bearer <access-token>
+```
+
+```json
+{
+  "name": "Shelf 1",
+  "parentLocationId": 3
+}
+```
+
+Omit `parentLocationId` to create a top-level location.
+
+#### Create exhibition
+
+```http
+POST /api/exhibitions
+Content-Type: application/json
+Authorization: Bearer <access-token>
+```
+
+```json
+{
+  "name": "Autumn Masks 2026",
+  "locationId": 8,
+  "startDate": "2026-09-10",
+  "endDate": "2026-10-15",
+  "itemIds": [45, 46, 52]
+}
+```
+
+`locationId` must reference a leaf internal location.
+
 #### Create item
 
 ```http
@@ -285,6 +380,8 @@ Authorization: Bearer <access-token>
   "moveInDate": "2026-05-06"
 }
 ```
+
+`initialLocationId` must reference a leaf location.
 
 #### Update planning fields
 
@@ -330,6 +427,28 @@ Authorization: Bearer <access-token>
 }
 ```
 
+`locationId` must reference a leaf location.
+
+#### Edit exhibition dates and item group
+
+```http
+PUT /api/exhibitions/12
+Content-Type: application/json
+Authorization: Bearer <access-token>
+```
+
+```json
+{
+  "name": "Autumn Masks 2026",
+  "locationId": 8,
+  "startDate": "2026-09-12",
+  "endDate": "2026-10-20",
+  "itemIds": [45, 46, 52, 60]
+}
+```
+
+Clients must reschedule any local end reminder for exhibition `12` from the latest returned `endDate`.
+
 #### Rent item to external organization
 
 ```http
@@ -348,6 +467,33 @@ Authorization: Bearer <access-token>
   "expectedReturnDate": "2026-06-20"
 }
 ```
+
+#### Example item history response entry
+
+```json
+{
+  "entries": [
+    {
+      "id": 91,
+      "presenceType": "EXTERNAL",
+      "organization": {
+        "id": 7,
+        "name": "Museum of Rome"
+      },
+      "moveInDate": "2026-05-20",
+      "expectedReturnDate": "2026-06-20",
+      "moveOutDate": null,
+      "movedByDevice": {
+        "id": "3f56cde0-9b72-44fd-b74c-b0dfc039de3a",
+        "friendlyName": "Front Desk Chrome",
+        "deviceType": "WEB_BROWSER"
+      }
+    }
+  ]
+}
+```
+
+Clients can derive the 3-day rental return reminder from the open external row with `expectedReturnDate`.
 
 ### 11.7 Standard error shape
 
@@ -377,7 +523,8 @@ Use one consistent error structure:
         "id": 45,
         "title": "Mask of the Harvest Festival",
         "currentPresenceType": "INTERNAL",
-        "currentLocationName": "Storage 1"
+        "currentLocationName": "Grid A",
+        "currentLocationPath": "Storage 1 > Shelf 2 > Grid A"
       }
     }
   }
@@ -415,6 +562,28 @@ This lets the frontend offer:
 }
 ```
 
+#### Overlapping exhibition item example
+
+```json
+{
+  "error": {
+    "code": "ITEM_EXHIBITION_OVERLAP",
+    "message": "One or more items already belong to another exhibition in an overlapping period",
+    "details": {
+      "itemIds": [45],
+      "conflictingExhibitions": [
+        {
+          "id": 12,
+          "name": "Autumn Masks 2026",
+          "startDate": "2026-09-10",
+          "endDate": "2026-10-15"
+        }
+      ]
+    }
+  }
+}
+```
+
 ## 12. Search, List, and Visibility Rules
 
 ### 12.1 Item list/search
@@ -426,6 +595,7 @@ Search should support:
 - title
 - author name
 - current location name
+- current location full path
 
 Search behavior:
 
@@ -444,23 +614,27 @@ When no filter is set:
 Defaults:
 
 - archived items hidden by default
-- archived locations hidden from selection/search by default
+- archived locations hidden from tree selection/search by default
 - archived authors hidden from suggestion lists by default
 - archived organizations hidden from suggestion lists by default
 
-Admin-only option:
+Admin-capable option:
 
 - `includeArchived=true`
+  - allowed for admin devices
+  - allowed for authenticated host-admin sessions
 
 ### 12.3 Item detail screen layout
 
 The item detail UI should show two separate sections:
 
 1. `Current / Planned Status`
-   - current location or current organization
+   - current location path or current organization
+   - current exhibition, if active
    - promised organization
    - expected leave date
 2. `History`
    - actual internal/external placement records only
+   - moved-by device friendly name when available
 
 Promised fields are visible in the UI but do not create timeline rows by themselves.

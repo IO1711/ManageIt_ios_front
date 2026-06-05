@@ -142,6 +142,36 @@ struct ManageItAPIClient {
         )
     }
 
+    func fetchAllItems(
+        serverURL: URL,
+        accessToken: String,
+        includeArchived: Bool = false,
+        pageSize: Int = 100
+    ) async throws -> [ItemResponse] {
+        var allItems: [ItemResponse] = []
+        var page = 0
+        var totalPages = 1
+
+        while page < totalPages {
+            let response = try await fetchItems(
+                serverURL: serverURL,
+                accessToken: accessToken,
+                query: InventoryListQuery(
+                    searchText: "",
+                    includeArchived: includeArchived,
+                    page: page,
+                    size: pageSize,
+                    sort: nil
+                )
+            )
+            allItems.append(contentsOf: response.items)
+            totalPages = max(response.totalPages, 1)
+            page += 1
+        }
+
+        return allItems
+    }
+
     func createItem(
         serverURL: URL,
         accessToken: String,
@@ -276,6 +306,64 @@ struct ManageItAPIClient {
             method: "POST",
             accessToken: accessToken,
             body: Optional<String>.none
+        )
+    }
+
+    // MARK: - Exhibitions
+
+    func fetchExhibitions(
+        serverURL: URL,
+        accessToken: String
+    ) async throws -> [ExhibitionSummaryResponse] {
+        try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions",
+            method: "GET",
+            accessToken: accessToken,
+            body: Optional<String>.none
+        )
+    }
+
+    func createExhibition(
+        serverURL: URL,
+        accessToken: String,
+        request: ExhibitionCreateRequest
+    ) async throws -> ExhibitionDetailResponse {
+        try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions",
+            method: "POST",
+            accessToken: accessToken,
+            body: request
+        )
+    }
+
+    func fetchExhibition(
+        serverURL: URL,
+        accessToken: String,
+        exhibitionID: Int64
+    ) async throws -> ExhibitionDetailResponse {
+        try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions/\(exhibitionID)",
+            method: "GET",
+            accessToken: accessToken,
+            body: Optional<String>.none
+        )
+    }
+
+    func updateExhibition(
+        serverURL: URL,
+        accessToken: String,
+        exhibitionID: Int64,
+        request: ExhibitionUpdateRequest
+    ) async throws -> ExhibitionDetailResponse {
+        try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions/\(exhibitionID)",
+            method: "PUT",
+            accessToken: accessToken,
+            body: request
         )
     }
 

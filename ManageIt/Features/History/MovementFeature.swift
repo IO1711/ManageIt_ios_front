@@ -10,6 +10,9 @@ struct MovementEntryView: View {
 
         ScrollView {
             VStack(spacing: 16) {
+                if let message = store.offlineGuidanceMessage {
+                    infoMessage(text: message)
+                }
                 modePickerSection(store: store)
                 targetSection(store: store)
                 dateSection(store: store)
@@ -102,7 +105,7 @@ struct MovementEntryView: View {
                     )) {
                         Text("Select location").tag(Int64(-1))
                         ForEach(store.availableLocations) { location in
-                            Text(location.name).tag(location.id)
+                            Text(location.displayLabel).tag(location.id)
                         }
                     }
                     .labelsHidden()
@@ -111,6 +114,9 @@ struct MovementEntryView: View {
                 }
             } else {
                 sectionHeader("External organization")
+                if let message = store.offlineExternalGuidanceMessage {
+                    infoMessage(text: message)
+                }
                 if let selected = store.selectedOrganization {
                     HStack {
                         Image(systemName: "building.2.fill")
@@ -118,11 +124,13 @@ struct MovementEntryView: View {
                         Text(selected.name)
                             .font(.system(size: 14, weight: .semibold))
                         Spacer()
-                        Button("Change") {
-                            store.selectedOrganization = nil
+                        if !store.usesOfflinePlannedOrganizationOnly {
+                            Button("Change") {
+                                store.selectedOrganization = nil
+                            }
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(AppTheme.primary)
                         }
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(AppTheme.primary)
                     }
                     .padding(14)
                     .background(RoundedRectangle(cornerRadius: 12).fill(AppTheme.primarySoft))
@@ -135,7 +143,7 @@ struct MovementEntryView: View {
                             }
                     }
 
-                    if !store.organizationSuggestions.isEmpty {
+                    if !store.usesOfflinePlannedOrganizationOnly && !store.organizationSuggestions.isEmpty {
                         VStack(spacing: 6) {
                             ForEach(store.organizationSuggestions) { suggestion in
                                 Button {
@@ -159,7 +167,8 @@ struct MovementEntryView: View {
                         }
                     }
 
-                    if !store.organizationQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    if !store.usesOfflinePlannedOrganizationOnly,
+                       !store.organizationQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                        !store.organizationSuggestions.contains(where: { $0.name.lowercased() == store.organizationQuery.lowercased() }) {
                         Button {
                             Task { await store.createOrganization(name: store.organizationQuery) }
@@ -213,6 +222,19 @@ struct MovementEntryView: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 10).fill(AppTheme.rejectedBg)
+        )
+    }
+
+    private func infoMessage(text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "icloud.slash")
+            Text(text).font(.system(size: 13))
+            Spacer()
+        }
+        .foregroundStyle(AppTheme.primary)
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 10).fill(AppTheme.primarySoft)
         )
     }
 }

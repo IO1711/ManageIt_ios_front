@@ -12,6 +12,7 @@ final class ItemDetailFeatureModel {
     var isArchiving: Bool = false
     var errorMessage: String?
     var historyErrorMessage: String?
+    var offlineStateVersion: Int = 0
 
     var storedContext: StoredDeviceContext
 
@@ -20,6 +21,9 @@ final class ItemDetailFeatureModel {
 
     @ObservationIgnored
     private let apiClient: ManageItAPIClient
+
+    @ObservationIgnored
+    private let offlineMovementStore: OfflineMovementStore
 
     @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
@@ -34,15 +38,26 @@ final class ItemDetailFeatureModel {
     private let onItemArchived: (ItemResponse) -> Void
 
     @ObservationIgnored
+    private let onReminderSourcesChanged: () -> Void
+
+    @ObservationIgnored
     private var authenticated: AuthenticatedAPI
+
+    @ObservationIgnored
+    private var offlineObserverTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private var snapshotObserverTask: Task<Void, Never>?
 
     init(
         itemID: Int64,
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
+        offlineMovementStore: OfflineMovementStore,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void,
+        onReminderSourcesChanged: @escaping () -> Void,
         onItemUpdated: @escaping (ItemResponse) -> Void,
         onItemArchived: @escaping (ItemResponse) -> Void
     ) {
@@ -50,8 +65,10 @@ final class ItemDetailFeatureModel {
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
+        self.offlineMovementStore = offlineMovementStore
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
+        self.onReminderSourcesChanged = onReminderSourcesChanged
         self.onItemUpdated = onItemUpdated
         self.onItemArchived = onItemArchived
 
@@ -62,9 +79,68 @@ final class ItemDetailFeatureModel {
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated
         )
+
+        self.offlineObserverTask = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: .offlineMovementStoreDidChange) {
+                guard let self else { return }
+                self.offlineStateVersion += 1
+            }
+        }
+
+        self.snapshotObserverTask = Task { [weak self] in
+            for await notification in NotificationCenter.default.notifications(named: .offlineMovementServerSnapshotDidChange) {
+                guard let self else { return }
+                let changedItemID: Int64?
+                if let item = notification.userInfo?[OfflineMovementNotificationKey.item] as? ItemResponse {
+                    changedItemID = item.id
+                } else if let rawID = notification.userInfo?[OfflineMovementNotificationKey.itemId] as? NSNumber {
+                    changedItemID = rawID.int64Value
+                } else {
+                    changedItemID = notification.userInfo?[OfflineMovementNotificationKey.itemId] as? Int64
+                }
+
+                guard changedItemID == self.itemID else {
+                    continue
+                }
+
+                if let item = notification.userInfo?[OfflineMovementNotificationKey.item] as? ItemResponse {
+                    self.item = item
+                    self.onItemUpdated(item)
+                }
+                if let history = notification.userInfo?[OfflineMovementNotificationKey.history] as? [ItemHistoryEntry] {
+                    self.historyEntries = history
+                }
+                self.offlineStateVersion += 1
+            }
+        }
+    }
+
+    deinit {
+        offlineObserverTask?.cancel()
+        snapshotObserverTask?.cancel()
     }
 
     var role: DeviceRole { sessionModel.activeSession?.context.role ?? storedContext.role }
+
+    var displayedItem: ItemResponse? {
+        _ = offlineStateVersion
+        guard let item else { return nil }
+        return offlineMovementStore.applyOverlay(to: item)
+    }
+
+    var displayedHistoryEntries: [ItemHistoryEntry] {
+        _ = offlineStateVersion
+        return offlineMovementStore.applyOverlay(to: historyEntries, itemId: itemID)
+    }
+
+    var offlineStatusPresentation: OfflineMovementStatusPresentation? {
+        _ = offlineStateVersion
+        return offlineMovementStore.statusPresentation(for: itemID)
+    }
+
+    func dismissRejectedOfflineMovement() {
+        offlineMovementStore.dismissRejectedEntry(for: itemID)
+    }
 
     func load() async {
         isLoading = true
@@ -109,6 +185,7 @@ final class ItemDetailFeatureModel {
             }
             self.item = archived
             self.onItemArchived(archived)
+            onReminderSourcesChanged()
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
@@ -147,15 +224,16 @@ final class ItemDetailFeatureModel {
     }
 
     func makeMovementModel() -> MovementFeatureModel? {
-        guard let item else { return nil }
+        guard let item = displayedItem else { return nil }
         return MovementFeatureModel(
-            itemID: item.id,
-            currentPresence: item.currentPlacement.presenceType,
+            currentItem: item,
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
+            offlineMovementStore: offlineMovementStore,
             onContextUpdated: onContextUpdated,
-            onSessionInvalidated: onSessionInvalidated
+            onSessionInvalidated: onSessionInvalidated,
+            onReminderSourcesChanged: onReminderSourcesChanged
         )
     }
 
@@ -165,6 +243,7 @@ final class ItemDetailFeatureModel {
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
+            offlineMovementStore: offlineMovementStore,
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated
         )

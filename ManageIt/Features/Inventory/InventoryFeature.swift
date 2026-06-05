@@ -95,13 +95,13 @@ struct InventoryFeatureView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let message = store.errorMessage, store.items.isEmpty {
+        if let message = store.errorMessage, store.visibleItems.isEmpty {
             errorState(message: message)
-        } else if store.isLoading && store.items.isEmpty {
+        } else if store.isLoading && store.visibleItems.isEmpty {
             ProgressView()
                 .padding(.top, 60)
                 .frame(maxWidth: .infinity)
-        } else if store.items.isEmpty && store.hasLoadedOnce {
+        } else if store.visibleItems.isEmpty && store.hasLoadedOnce {
             emptyState
         } else {
             resultsList
@@ -111,11 +111,14 @@ struct InventoryFeatureView: View {
     private var resultsList: some View {
         ScrollView {
             LazyVStack(spacing: 10) {
-                ForEach(store.items) { item in
+                ForEach(store.visibleItems) { item in
                     Button {
                         onSelectItem(item.id)
                     } label: {
-                        InventoryItemRow(item: item)
+                        InventoryItemRow(
+                            item: item,
+                            offlineStatus: store.offlineStatusPresentation(for: item.id)
+                        )
                     }
                     .buttonStyle(.plain)
                     .onAppear {
@@ -177,6 +180,7 @@ struct InventoryFeatureView: View {
 
 struct InventoryItemRow: View {
     let item: ItemResponse
+    let offlineStatus: OfflineMovementStatusPresentation?
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -199,6 +203,13 @@ struct InventoryItemRow: View {
                         StatusTag(text: "Archived", kind: .expired)
                     } else {
                         placementTag
+                    }
+                }
+
+                if let offlineStatus {
+                    HStack {
+                        StatusTag(text: offlineStatus.text, kind: offlineStatus.kind)
+                        Spacer()
                     }
                 }
 

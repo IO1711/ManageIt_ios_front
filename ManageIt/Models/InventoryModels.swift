@@ -13,6 +13,11 @@ struct ItemAuthorSummary: Codable, Equatable, Identifiable, Hashable {
 struct ItemLocationSummary: Codable, Equatable, Identifiable, Hashable {
     let id: Int64
     let name: String
+    let fullPath: String
+
+    var displayName: String {
+        fullPath.isEmpty ? name : fullPath
+    }
 }
 
 struct ItemOrganizationSummary: Codable, Equatable, Identifiable, Hashable {
@@ -24,11 +29,12 @@ struct ItemPlacement: Codable, Equatable {
     let presenceType: ItemPresenceType
     let location: ItemLocationSummary?
     let organization: ItemOrganizationSummary?
+    let expectedReturnDate: BusinessDate?
 
     var displayTargetName: String {
         switch presenceType {
         case .internal:
-            return location?.name ?? "—"
+            return location?.displayName ?? "—"
         case .external:
             return organization?.name ?? "—"
         }

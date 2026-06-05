@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Observation
 
 enum AppPhase: Equatable {
@@ -17,6 +18,7 @@ final class AppModel {
     var pairingModel: PairingFeatureModel
     var sessionModel: DeviceSessionModel
     var inventoryModel: InventoryFeatureModel?
+    var exhibitionsModel: ExhibitionsFeatureModel?
 
     @ObservationIgnored
     private let preferences: AppPreferences
@@ -28,7 +30,19 @@ final class AppModel {
     private let apiClient: ManageItAPIClient
 
     @ObservationIgnored
+    private let offlineMovementStore: OfflineMovementStore
+
+    @ObservationIgnored
+    private let reminderCoordinator: ReminderCoordinator
+
+    @ObservationIgnored
     private var restoreTask: Task<Void, Never>?
+
+    @ObservationIgnored
+    private let pathMonitor: NWPathMonitor
+
+    @ObservationIgnored
+    private let pathMonitorQueue = DispatchQueue(label: "manageit.offline-sync.monitor")
 
     init() {
         let preferences = AppPreferences()
@@ -44,10 +58,12 @@ final class AppModel {
             return URLSession(configuration: configuration)
         }()
         let apiClient = ManageItAPIClient(urlSession: urlSession)
+        let offlineMovementStore = OfflineMovementStore(preferences: preferences)
 
         self.preferences = preferences
         self.keychainStore = keychainStore
         self.apiClient = apiClient
+        self.offlineMovementStore = offlineMovementStore
 
         let storedContext = preferences.loadDeviceContext()
         self.pairedDevice = storedContext
@@ -58,10 +74,16 @@ final class AppModel {
         }
         #endif
 
-        self.sessionModel = DeviceSessionModel(
+        let sessionModel = DeviceSessionModel(
             apiClient: apiClient,
             keychainStore: keychainStore
         )
+        self.sessionModel = sessionModel
+        self.reminderCoordinator = ReminderCoordinator(
+            apiClient: apiClient,
+            sessionModel: sessionModel
+        )
+        self.pathMonitor = NWPathMonitor()
         self.pairingModel = PairingFeatureModel(
             apiClient: apiClient,
             keychainStore: keychainStore,
@@ -75,6 +97,18 @@ final class AppModel {
         pairingModel.onActivationComplete = { [weak self] response, serverAddress in
             try self?.activatePairedDevice(response: response, serverAddress: serverAddress)
         }
+
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor in
+                await self?.syncOfflineMovements()
+            }
+        }
+        pathMonitor.start(queue: pathMonitorQueue)
+    }
+
+    deinit {
+        pathMonitor.cancel()
     }
 
     var activeSession: ActiveDeviceSession? {
@@ -100,7 +134,9 @@ final class AppModel {
             let session = try await sessionModel.restore(storedContext: storedContext)
             updatePersistedContext(from: session)
             inventoryModel = makeInventoryModel(for: session.context)
+            exhibitionsModel = makeExhibitionsModel(for: session.context)
             appPhase = .active
+            await syncOfflineMovements()
         } catch {
             appPhase = .sessionRecovery
         }
@@ -136,7 +172,9 @@ final class AppModel {
         )
         sessionModel.adopt(activeSession: session)
         inventoryModel = makeInventoryModel(for: context)
+        exhibitionsModel = makeExhibitionsModel(for: context)
         appPhase = .active
+        Task { await syncLocalState() }
     }
 
     func applyRefreshedSession(_ session: ActiveDeviceSession) {
@@ -147,11 +185,18 @@ final class AppModel {
         } else {
             inventoryModel?.updateStoredContext(session.context)
         }
+        if exhibitionsModel == nil {
+            exhibitionsModel = makeExhibitionsModel(for: session.context)
+        } else {
+            exhibitionsModel?.updateStoredContext(session.context)
+        }
     }
 
     func handleSessionInvalidation(clearLocalPairing: Bool) {
         sessionModel.clear()
         inventoryModel = nil
+        exhibitionsModel = nil
+        Task { await reminderCoordinator.cancelManagedNotifications() }
         if clearLocalPairing {
             clearAllLocalPairing()
         } else {
@@ -171,9 +216,12 @@ final class AppModel {
         preferences.clearDeviceContext()
         sessionModel.clear()
         inventoryModel = nil
+        exhibitionsModel = nil
         pairedDevice = nil
+        offlineMovementStore.clearAll()
         pairingModel.reset(keepServerAddress: true)
         appPhase = .pairing
+        Task { await reminderCoordinator.cancelManagedNotifications() }
     }
 
     func retryRestore() {
@@ -221,6 +269,77 @@ final class AppModel {
             sessionModel: sessionModel,
             apiClient: apiClient,
             preferences: preferences,
+            offlineMovementStore: offlineMovementStore,
+            onContextUpdated: { [weak self] updated in
+                self?.pairedDevice = updated
+                self?.preferences.saveDeviceContext(updated)
+            },
+            onSessionInvalidated: { [weak self] in
+                self?.handleSessionInvalidation(clearLocalPairing: false)
+            },
+            onReminderSourcesChanged: { [weak self] in
+                guard let self else { return }
+                Task { await self.syncLocalState() }
+            }
+        )
+    }
+
+    private func makeExhibitionsModel(for context: StoredDeviceContext) -> ExhibitionsFeatureModel {
+        ExhibitionsFeatureModel(
+            storedContext: context,
+            sessionModel: sessionModel,
+            apiClient: apiClient,
+            onContextUpdated: { [weak self] updated in
+                self?.pairedDevice = updated
+                self?.preferences.saveDeviceContext(updated)
+            },
+            onSessionInvalidated: { [weak self] in
+                self?.handleSessionInvalidation(clearLocalPairing: false)
+            },
+            onReminderSourcesChanged: { [weak self] in
+                guard let self else { return }
+                Task { await self.syncLocalState() }
+            }
+        )
+    }
+
+    func syncLocalState() async {
+        await syncOfflineMovements()
+        await syncReminders()
+    }
+
+    func syncOfflineMovements() async {
+        guard let context = sessionModel.activeSession?.context ?? pairedDevice else {
+            return
+        }
+
+        let authenticated = AuthenticatedAPI(
+            apiClient: apiClient,
+            sessionModel: sessionModel,
+            storedContext: context,
+            onContextUpdated: { [weak self] updated in
+                self?.pairedDevice = updated
+                self?.preferences.saveDeviceContext(updated)
+            },
+            onSessionInvalidated: { [weak self] in
+                self?.handleSessionInvalidation(clearLocalPairing: false)
+            }
+        )
+
+        await offlineMovementStore.syncQueuedMovements(
+            authenticated: authenticated,
+            apiClient: apiClient
+        )
+    }
+
+    func syncReminders() async {
+        guard let context = sessionModel.activeSession?.context ?? pairedDevice else {
+            await reminderCoordinator.cancelManagedNotifications()
+            return
+        }
+
+        await reminderCoordinator.syncAll(
+            storedContext: context,
             onContextUpdated: { [weak self] updated in
                 self?.pairedDevice = updated
                 self?.preferences.saveDeviceContext(updated)

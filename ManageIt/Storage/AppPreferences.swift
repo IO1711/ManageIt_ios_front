@@ -5,6 +5,8 @@ final class AppPreferences {
         static let serverAddress = "manageit.serverAddress"
         static let pairedDeviceContext = "manageit.pairedDeviceContext"
         static let lastInventoryQuery = "manageit.lastInventoryQuery"
+        static let cachedLocations = "manageit.cachedLocations"
+        static let offlineMovementOutbox = "manageit.offlineMovementOutbox"
     }
 
     private let userDefaults: UserDefaults
@@ -46,6 +48,8 @@ final class AppPreferences {
         userDefaults.removeObject(forKey: Keys.pairedDeviceContext)
         userDefaults.removeObject(forKey: Keys.serverAddress)
         userDefaults.removeObject(forKey: Keys.lastInventoryQuery)
+        userDefaults.removeObject(forKey: Keys.cachedLocations)
+        userDefaults.removeObject(forKey: Keys.offlineMovementOutbox)
     }
 
     func saveLastInventoryQuery(_ query: String) {
@@ -54,5 +58,33 @@ final class AppPreferences {
 
     func loadLastInventoryQuery() -> String {
         userDefaults.string(forKey: Keys.lastInventoryQuery) ?? ""
+    }
+
+    func saveCachedLocations(_ locations: [LocationResponse]) {
+        guard let data = try? encoder.encode(locations) else {
+            return
+        }
+        userDefaults.set(data, forKey: Keys.cachedLocations)
+    }
+
+    func loadCachedLocations() -> [LocationResponse] {
+        guard let data = userDefaults.data(forKey: Keys.cachedLocations) else {
+            return []
+        }
+        return (try? decoder.decode([LocationResponse].self, from: data)) ?? []
+    }
+
+    func saveOfflineMovementOutbox(_ entries: [OfflineMovementOutboxEntry]) {
+        guard let data = try? encoder.encode(entries) else {
+            return
+        }
+        userDefaults.set(data, forKey: Keys.offlineMovementOutbox)
+    }
+
+    func loadOfflineMovementOutbox() -> [OfflineMovementOutboxEntry] {
+        guard let data = userDefaults.data(forKey: Keys.offlineMovementOutbox) else {
+            return []
+        }
+        return (try? decoder.decode([OfflineMovementOutboxEntry].self, from: data)) ?? []
     }
 }

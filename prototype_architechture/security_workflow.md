@@ -544,6 +544,9 @@ And Spring authorities should still be exposed as:
 
 - `ROLE_ADMIN`
 - `ROLE_EDITOR`
+- `ROLE_HOST_ADMIN` for the host-admin session itself
+
+The authenticated host-admin session should also be granted `ROLE_ADMIN` and `ROLE_EDITOR` so it can reach any protected API without pretending to be a registered device.
 
 ## 7. Restrict host-only admin routes
 

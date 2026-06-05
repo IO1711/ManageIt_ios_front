@@ -1,16 +1,23 @@
 import Foundation
 
-struct MovementOrganizationInput: Encodable, Equatable {
+struct MovementOrganizationInput: Codable, Equatable {
     let id: Int64?
     let name: String?
 }
 
-struct ItemMovementCreateRequest: Encodable, Equatable {
+struct MovementExpectedSourcePlacementInput: Codable, Equatable {
+    let presenceType: ItemPresenceType
+    let locationId: Int64?
+    let organizationId: Int64?
+}
+
+struct ItemMovementCreateRequest: Codable, Equatable {
     let presenceType: ItemPresenceType
     let locationId: Int64?
     let organization: MovementOrganizationInput?
     let moveInDate: BusinessDate
     let expectedReturnDate: BusinessDate?
+    let expectedSourcePlacement: MovementExpectedSourcePlacementInput?
 }
 
 enum MovementEntryMode: Equatable {
@@ -35,11 +42,16 @@ enum MovementEntryMode: Equatable {
     }
 }
 
-// MARK: - Local history row view model
-//
-// The backend success contract for `GET /api/items/{id}/history` is not finalized
-// in Part III of the iOS source-of-truth. The view layer renders this local shape
-// once a concrete row decoder is available (`itemHistoryDecoder` in the API client).
+struct MovedByDeviceSummary: Codable, Equatable, Hashable {
+    let id: UUID
+    let friendlyName: String
+    let deviceType: DeviceType
+}
+
+enum OfflineMovementSyncState: String, Codable, Equatable {
+    case queued
+    case rejected
+}
 
 struct ItemHistoryEntry: Identifiable, Equatable {
     let id: Int64
@@ -49,20 +61,41 @@ struct ItemHistoryEntry: Identifiable, Equatable {
     let moveInDate: BusinessDate
     let expectedReturnDate: BusinessDate?
     let moveOutDate: BusinessDate?
+    let movedByDevice: MovedByDeviceSummary?
+    let createdAt: Date?
+    let localSyncState: OfflineMovementSyncState?
+    let localSyncMessage: String?
 
     var isOpen: Bool { moveOutDate == nil }
 
     var targetName: String {
         switch presenceType {
-        case .internal: return location?.name ?? "—"
+        case .internal: return location?.displayName ?? "—"
         case .external: return organization?.name ?? "—"
         }
     }
+
+    var performerName: String {
+        movedByDevice?.friendlyName ?? "Host admin created"
+    }
+
+    func closing(at moveOutDate: BusinessDate) -> ItemHistoryEntry {
+        ItemHistoryEntry(
+            id: id,
+            presenceType: presenceType,
+            location: location,
+            organization: organization,
+            moveInDate: moveInDate,
+            expectedReturnDate: expectedReturnDate,
+            moveOutDate: moveOutDate,
+            movedByDevice: movedByDevice,
+            createdAt: createdAt,
+            localSyncState: localSyncState,
+            localSyncMessage: localSyncMessage
+        )
+    }
 }
 
-/// Decoder shape for whatever the backend returns. Defensive: tolerates either
-/// a bare array or `{ "entries": [...] }`. Once the source-of-truth fills in
-/// the exact response, this can collapse to the canonical shape.
 struct ItemHistoryListResponse: Decodable {
     let entries: [ItemHistoryEntry]
 
@@ -88,6 +121,8 @@ extension ItemHistoryEntry: Decodable {
         case moveInDate
         case expectedReturnDate
         case moveOutDate
+        case movedByDevice
+        case createdAt
     }
 
     init(from decoder: Decoder) throws {
@@ -99,5 +134,9 @@ extension ItemHistoryEntry: Decodable {
         self.moveInDate = try c.decode(BusinessDate.self, forKey: .moveInDate)
         self.expectedReturnDate = try c.decodeIfPresent(BusinessDate.self, forKey: .expectedReturnDate)
         self.moveOutDate = try c.decodeIfPresent(BusinessDate.self, forKey: .moveOutDate)
+        self.movedByDevice = try c.decodeIfPresent(MovedByDeviceSummary.self, forKey: .movedByDevice)
+        self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt)
+        self.localSyncState = nil
+        self.localSyncMessage = nil
     }
 }

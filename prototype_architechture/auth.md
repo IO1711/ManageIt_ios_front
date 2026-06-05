@@ -24,6 +24,7 @@ The host-only admin UI is different from client devices:
 - the password is created during onboarding
 - the password is stored as a secure hash in the database
 - the host admin UI uses a secure session cookie
+- once authenticated, that host-admin session may call any protected backend API, including the normal inventory and lookup APIs
 
 ### 5.3 Regular client web auth
 
@@ -67,10 +68,10 @@ The iPhone app uses:
 1. Open host-only admin UI on `localhost`.
 2. Set organization name.
 3. Set installation-wide admin password.
-4. Add the initial list of locations.
+4. Add the initial location tree.
 5. Mark onboarding complete.
 
-The system is not considered ready until the initial location list exists.
+The system is not considered ready until at least one leaf location exists.
 
 ### 6.2 iPhone registration flow
 
@@ -126,7 +127,10 @@ Desktop access requests do not auto-expire in the prototype. They stay pending u
 - planning updates
 - movement/rental events
 - per-item history
-- location management for admin devices
+- exhibition list/detail/history
+- protected exhibition management APIs according to role checks
+- hierarchical location management for admin devices
+- the same protected APIs may also be used by an authenticated host-admin session
 
 ### Role differences
 
@@ -142,8 +146,10 @@ Desktop access requests do not auto-expire in the prototype. They stay pending u
 `ADMIN` can do everything `EDITOR` can, plus:
 
 - archive items
-- create/edit/archive locations
+- create root/child locations, rename locations, archive locations
 - use admin-level inventory actions in the regular client app
+
+The host admin can also use any protected API regardless of device role, because it is a separate trusted operator session rather than a registered device.
 
 Only the host-only admin UI can:
 

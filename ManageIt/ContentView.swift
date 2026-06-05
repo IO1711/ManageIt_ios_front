@@ -3,6 +3,8 @@ import SwiftUI
 struct ContentView: View {
     let appModel: AppModel
 
+    @Environment(\.scenePhase) private var scenePhase
+
     var body: some View {
         Group {
             switch appModel.appPhase {
@@ -29,10 +31,12 @@ struct ContentView: View {
                 )
             case .active:
                 if let inventoryModel = appModel.inventoryModel,
+                   let exhibitionsModel = appModel.exhibitionsModel,
                    let context = appModel.pairedDevice {
                     AuthenticatedRootView(
                         appModel: appModel,
                         inventoryModel: inventoryModel,
+                        exhibitionsModel: exhibitionsModel,
                         context: context
                     )
                 } else {
@@ -43,6 +47,16 @@ struct ContentView: View {
         .background(AppTheme.canvas.ignoresSafeArea())
         .task {
             appModel.bootIfNeeded()
+        }
+        .task(id: appModel.appPhase) {
+            if appModel.appPhase == .active {
+                await appModel.syncLocalState()
+            }
+        }
+        .onChange(of: scenePhase) { _, newValue in
+            if newValue == .active {
+                Task { await appModel.syncLocalState() }
+            }
         }
     }
 }
@@ -146,12 +160,14 @@ struct SessionRecoveryView: View {
 struct AuthenticatedRootView: View {
     let appModel: AppModel
     let inventoryModel: InventoryFeatureModel
+    let exhibitionsModel: ExhibitionsFeatureModel
     let context: StoredDeviceContext
 
     @State private var selectedTab: Tab = .inventory
 
     enum Tab: Hashable {
         case inventory
+        case exhibitions
         case locations
         case account
     }
@@ -166,6 +182,12 @@ struct AuthenticatedRootView: View {
                 Label("Inventory", systemImage: "tray.full.fill")
             }
             .tag(Tab.inventory)
+
+            ExhibitionsStackView(exhibitionsModel: exhibitionsModel)
+                .tabItem {
+                    Label("Exhibitions", systemImage: "sparkles.rectangle.stack.fill")
+                }
+                .tag(Tab.exhibitions)
 
             if context.role.isAdmin {
                 NavigationStack {
@@ -273,6 +295,47 @@ struct InventoryStackView: View {
                 inventoryModel: inventoryModel,
                 itemID: id
             )
+        }
+    }
+}
+
+// MARK: - Exhibition stack
+
+struct ExhibitionsStackView: View {
+    let exhibitionsModel: ExhibitionsFeatureModel
+
+    @State private var path: [Int64] = []
+    @State private var createModel: ExhibitionEditorFeatureModel?
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            ExhibitionsFeatureView(
+                store: exhibitionsModel,
+                onSelectExhibition: { path.append($0) },
+                onCreateExhibition: {
+                    createModel = exhibitionsModel.makeCreateModel()
+                }
+            )
+            .navigationTitle("Exhibitions")
+            .navigationBarTitleDisplayMode(.large)
+            .navigationDestination(for: Int64.self) { exhibitionID in
+                ExhibitionDetailWrapper(
+                    exhibitionsModel: exhibitionsModel,
+                    exhibitionID: exhibitionID
+                )
+            }
+        }
+        .sheet(item: $createModel) { model in
+            NavigationStack {
+                ExhibitionEditorView(
+                    store: model,
+                    onCompleted: { exhibition in
+                        exhibitionsModel.upsertSummary(from: exhibition)
+                        createModel = nil
+                    },
+                    onCancel: { createModel = nil }
+                )
+            }
         }
     }
 }
@@ -402,6 +465,11 @@ private struct MovementWrapper: View {
             }
         }
         .task {
+            if let item = inventoryModel.itemSnapshot(id: itemID) {
+                self.movementModel = inventoryModel.makeMovementModel(for: item)
+                return
+            }
+
             let detail = inventoryModel.makeDetailModel(for: itemID)
             await detail.load()
             if let model = detail.makeMovementModel() {
@@ -428,8 +496,48 @@ private struct HistoryWrapper: View {
             }
         }
         .task {
-            let detail = inventoryModel.makeDetailModel(for: itemID)
-            self.historyModel = detail.makeHistoryModel()
+            self.historyModel = inventoryModel.makeHistoryModel(for: itemID)
+        }
+    }
+}
+
+private struct ExhibitionDetailWrapper: View {
+    let exhibitionsModel: ExhibitionsFeatureModel
+    let exhibitionID: Int64
+
+    @State private var detailModel: ExhibitionDetailFeatureModel?
+    @State private var editingModel: ExhibitionEditorFeatureModel?
+
+    var body: some View {
+        Group {
+            if let detailModel {
+                ExhibitionDetailView(
+                    store: detailModel,
+                    onEdit: {
+                        editingModel = detailModel.makeEditorModel()
+                    }
+                )
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task {
+            if detailModel == nil {
+                detailModel = exhibitionsModel.makeDetailModel(for: exhibitionID)
+            }
+        }
+        .sheet(item: $editingModel) { model in
+            NavigationStack {
+                ExhibitionEditorView(
+                    store: model,
+                    onCompleted: { exhibition in
+                        detailModel?.applyUpdatedExhibition(exhibition)
+                        exhibitionsModel.upsertSummary(from: exhibition)
+                        editingModel = nil
+                    },
+                    onCancel: { editingModel = nil }
+                )
+            }
         }
     }
 }

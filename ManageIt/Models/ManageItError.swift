@@ -46,4 +46,11 @@ enum ManageItError: LocalizedError {
             return message
         }
     }
+
+    var isTransportFailure: Bool {
+        if case .transportFailure = self {
+            return true
+        }
+        return false
+    }
 }
