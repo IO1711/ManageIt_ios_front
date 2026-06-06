@@ -27,7 +27,7 @@ final class ItemEditorFeatureModel: Identifiable {
     var authorQuery: String = ""
     var authorSuggestions: [AuthorResponse] = []
     var availableLocations: [LocationResponse] = []
-    var initialLocationID: Int64?
+    var selectedInitialLocation: LocationResponse?
     var moveInDate: BusinessDate?
     var isSaving: Bool = false
     var isCheckingConflict: Bool = false
@@ -110,6 +110,10 @@ final class ItemEditorFeatureModel: Identifiable {
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
+    }
+
+    func selectInitialLocation(_ location: LocationResponse) {
+        selectedInitialLocation = location
     }
 
     func searchAuthors(query: String) {
@@ -266,8 +270,8 @@ final class ItemEditorFeatureModel: Identifiable {
 
         switch mode {
         case .create:
-            guard let locationID = initialLocationID else {
-                validationMessage = "Choose an initial internal location."
+            guard let location = selectedInitialLocation, location.isAssignable, !location.archived else {
+                validationMessage = "Choose an initial internal leaf location."
                 throw ManageItError.validationError(validationMessage!)
             }
             guard let date = moveInDate else {
@@ -279,7 +283,7 @@ final class ItemEditorFeatureModel: Identifiable {
                 title: trimmedTitle,
                 secondaryInventoryNumbers: secondaryInventoryNumbers,
                 authors: authors,
-                initialLocationId: locationID,
+                initialLocationId: location.id,
                 moveInDate: date
             )
             return .create(request)

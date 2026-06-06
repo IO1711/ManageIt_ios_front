@@ -6,7 +6,7 @@ import Observation
 final class MovementFeatureModel {
     var itemID: Int64
     var mode: MovementEntryMode
-    var selectedLocationID: Int64?
+    var selectedLocation: LocationResponse?
     var availableLocations: [LocationResponse] = []
     var selectedOrganization: OrganizationResponse?
     var organizationQuery: String = ""
@@ -86,8 +86,12 @@ final class MovementFeatureModel {
             organizationSuggestions = []
             expectedReturnDate = nil
         } else {
-            selectedLocationID = nil
+            selectedLocation = nil
         }
+    }
+
+    func selectLocation(_ location: LocationResponse) {
+        selectedLocation = location
     }
 
     func searchOrganizations(query: String) {
@@ -149,12 +153,12 @@ final class MovementFeatureModel {
 
         switch mode {
         case .internalMove, .returnToInternal:
-            guard let locationID = selectedLocationID else {
-                validationMessage = "Choose a destination location."
+            guard let location = selectedLocation, location.isAssignable, !location.archived else {
+                validationMessage = "Choose a destination leaf location."
                 return
             }
             presenceType = .internal
-            locationId = locationID
+            locationId = location.id
             organization = nil
         case .externalRental:
             guard let selectedOrg = selectedOrganization else {

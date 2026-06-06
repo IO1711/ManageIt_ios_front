@@ -5,6 +5,8 @@ struct MovementEntryView: View {
     let onCompleted: (ItemResponse) -> Void
     let onCancel: () -> Void
 
+    @State private var showLocationPicker = false
+
     var body: some View {
         @Bindable var store = store
 
@@ -53,6 +55,16 @@ struct MovementEntryView: View {
                 onCompleted(saved)
             }
         }
+        .sheet(isPresented: $showLocationPicker) {
+            LocationTreePicker(
+                allLocations: store.availableLocations,
+                onSelect: { selected in
+                    store.selectLocation(selected)
+                    showLocationPicker = false
+                },
+                onCancel: { showLocationPicker = false }
+            )
+        }
     }
 
     private func modePickerSection(store: MovementFeatureModel) -> some View {
@@ -95,20 +107,11 @@ struct MovementEntryView: View {
         VStack(alignment: .leading, spacing: 14) {
             if store.mode.requiresLocation {
                 sectionHeader("Internal location")
-                FormFieldContainer(title: "Destination") {
-                    Picker("Destination", selection: Binding(
-                        get: { store.selectedLocationID ?? -1 },
-                        set: { store.selectedLocationID = $0 == -1 ? nil : $0 }
-                    )) {
-                        Text("Select location").tag(Int64(-1))
-                        ForEach(store.availableLocations) { location in
-                            Text(location.name).tag(location.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .tint(AppTheme.ink)
-                }
+                LocationTreeField(
+                    title: "Destination leaf location",
+                    selected: store.selectedLocation,
+                    onTap: { showLocationPicker = true }
+                )
             } else {
                 sectionHeader("External organization")
                 if let selected = store.selectedOrganization {

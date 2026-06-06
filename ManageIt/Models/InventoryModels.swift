@@ -13,6 +13,10 @@ struct ItemAuthorSummary: Codable, Equatable, Identifiable, Hashable {
 struct ItemLocationSummary: Codable, Equatable, Identifiable, Hashable {
     let id: Int64
     let name: String
+    let path: String?
+
+    /// Display path with fallback to name for older payloads.
+    var displayPath: String { path ?? name }
 }
 
 struct ItemOrganizationSummary: Codable, Equatable, Identifiable, Hashable {
@@ -28,7 +32,7 @@ struct ItemPlacement: Codable, Equatable {
     var displayTargetName: String {
         switch presenceType {
         case .internal:
-            return location?.name ?? "—"
+            return location?.displayPath ?? "—"
         case .external:
             return organization?.name ?? "—"
         }
@@ -106,4 +110,10 @@ struct ConflictingItem: Decodable, Equatable {
     let title: String
     let currentPresenceType: ItemPresenceType
     let currentLocationName: String?
+    let currentLocationPath: String?
+
+    /// Best available human-readable description of where the conflicting item lives.
+    var displayPlacement: String {
+        currentLocationPath ?? currentLocationName ?? "—"
+    }
 }

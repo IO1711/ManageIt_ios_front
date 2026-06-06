@@ -24,12 +24,13 @@ This prototype includes:
   - regular client app
   - host-only admin UI
 - one native SwiftUI iPhone app
+- iPhone-only offline movement queue with dedicated local outbox storage
 - device-based access for iPhone and regular web clients
 - password-based access for the host-only admin UI
 
 This prototype does not include:
 
-- offline sync
+- generic offline sync across all clients and all write types
 - Android native app
 - multiple organizations in one installation
 - per-user accounts
@@ -39,7 +40,11 @@ This prototype does not include:
 
 - Each installation belongs to exactly one organization.
 - The organization name is set during onboarding.
-- Locations are a flat list such as `Room 1`, `Storage 1`, `Hall A`.
+- Locations form a hierarchy such as `Room 1 > Shelf 1 > Grid A`.
+- A location can contain sub-locations such as shelves, grids, drawers, and similar internal divisions.
+- Sub-locations can themselves contain more sub-locations.
+- Location names only need to be unique among siblings under the same parent.
+- Items can only be placed in leaf locations with no children.
 - An item is always in exactly one current place:
   - inside the museum at one internal location
   - or outside at one external organization
@@ -59,6 +64,17 @@ This prototype does not include:
 - Business dates are `DATE` values, not timestamps.
 - Archived records stay in the database and are hidden by default.
 - Archived items keep their main inventory numbers permanently reserved.
+- An exhibition:
+  - happens at exactly one internal leaf location
+  - has a start date and end date
+  - can contain multiple items during that period
+- During an active exhibition, every included item must:
+  - remain `INTERNAL`
+  - have `items.current_location_id` exactly equal to the exhibition location
+- The same item can never belong to two exhibitions whose date ranges overlap.
+- Ended exhibitions and their linked item sets are kept permanently as exhibition history.
+- Open external rentals with an `expected_return_date` should trigger a client-local reminder 3 calendar days before that date.
+- The rental reminder should identify the item, the external organization where it currently is, and that the expected return is in 3 days.
 
 ## 3. High-Level Architecture
 
@@ -146,6 +162,8 @@ No heavy UI/component library is used in the prototype. The UI stays custom and 
 | `URLSession` | HTTP networking |
 | `Keychain Services` | Secure storage for refresh token, device credentials, and stable installation identity |
 | `AVFoundation` | QR code scanning |
+| `UserNotifications` | Local exhibition end and rental return reminders |
+| `Persistent local app storage` | Cached location hierarchy, cached item context, and dedicated offline-movement outbox |
 | `Foundation` | Models, dates, formatting, decoding |
 
 ### 4.4 Why this stack
@@ -224,10 +242,10 @@ The iPhone app uses:
 1. Open host-only admin UI on `localhost`.
 2. Set organization name.
 3. Set installation-wide admin password.
-4. Add the initial list of locations.
+4. Add the initial location tree.
 5. Mark onboarding complete.
 
-The system is not considered ready until the initial location list exists.
+The system is not considered ready until at least one leaf location exists.
 
 ### 6.2 iPhone registration flow
 
@@ -270,7 +288,7 @@ Desktop access requests do not auto-expire in the prototype. They stay pending u
 1. User enters item metadata.
 2. User selects or creates authors.
 3. User adds optional secondary inventory numbers.
-4. User selects the initial internal location.
+4. User selects the initial internal leaf location.
 5. Backend creates:
    - the item row
    - author links
@@ -292,12 +310,14 @@ When moving an item:
 For internal movement:
 
 - new history row points to a `location_id`
+- `location_id` must reference a leaf location
 - `expected_return_date` stays `null`
 
 For external rental:
 
 - new history row points to an `organization_id`
 - `expected_return_date` can be filled
+- `expected_return_date` is the source date for the 3-day rental return reminder on clients
 - `items.current_presence_type` becomes `EXTERNAL`
 - `items.current_organization_id` is set
 - `items.current_location_id` becomes `null`
@@ -309,10 +329,31 @@ For external rental:
 When an item returns from an external organization:
 
 1. User creates a normal new internal movement event.
-2. User selects the location where the item is placed again.
+2. User selects the leaf location where the item is placed again.
 3. Backend closes the external history row automatically.
 4. Backend creates a new internal history row.
 5. Backend updates `items.current_location_id`.
+
+### 6.7 Exhibition flow
+
+When creating or editing an exhibition:
+
+1. User enters the exhibition name, internal location, start date, end date, and item group.
+2. Backend validates the exhibition location is a leaf internal location.
+3. Backend validates `start_date <= end_date`.
+4. Backend validates the same item is not already linked to another exhibition whose date range overlaps.
+5. If the exhibition is already active for the relevant business date, backend validates every included item is currently `INTERNAL` and `items.current_location_id` exactly equals the exhibition location.
+6. Backend stores the exhibition row and its linked item rows.
+7. Ended exhibitions remain queryable as exhibition history.
+
+Notification note:
+
+- Exhibition end reminders are client-local only.
+- Rental return reminders are client-local only.
+- For an open external rental with `expected_return_date`, clients should schedule a reminder 3 calendar days before that date.
+- Rental reminders should identify the item and the current external organization, and say the expected return is in 3 days.
+- When an exhibition date range or an open rental `expected_return_date` changes, clients must reschedule the corresponding local reminder from the latest returned dates.
+- When an open rental row is closed by return, clients must cancel the rental reminder.
 
 ## 7. Database Design
 
@@ -340,10 +381,12 @@ The prototype database should include these main tables:
 - `authors`
 - `locations`
 - `organizations`
+- `exhibitions`
 - `items`
 - `item_secondary_numbers`
 - `item_authors`
 - `item_history`
+- `exhibition_items`
 
 ### 7.3 Common audit columns
 
@@ -358,6 +401,8 @@ Use these audit fields on mutable business tables when relevant:
 - `archived_by_device_id UUID NULL`
 
 `created_by_device_id` and `updated_by_device_id` reference `registered_devices(id)`.
+
+For `item_history`, `created_by_device_id` is the registered device/browser/iPhone that created the movement row. Clients should resolve that device through `registered_devices.friendly_name` for the "moved by" display.
 
 Host-only admin UI operations are not device-based. Those actions are controlled by the host admin password/session.
 
@@ -479,12 +524,13 @@ Stores unique authors. Authors are created during item create/edit flow.
 
 #### `locations`
 
-Stores flat internal museum locations.
+Stores hierarchical internal museum locations.
 
 | Column | Type | Notes |
 | --- | --- | --- |
 | `id` | `BIGSERIAL PRIMARY KEY` | Business id |
-| `name` | `VARCHAR(255) NOT NULL` | Unique, case-insensitive |
+| `parent_location_id` | `BIGINT NULL REFERENCES locations(id)` | Null for top-level locations |
+| `name` | `VARCHAR(255) NOT NULL` | Case-insensitive unique among siblings |
 | `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | Audit |
 | `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | Audit |
 | `created_by_device_id` | `UUID NULL REFERENCES registered_devices(id)` | Audit |
@@ -493,7 +539,13 @@ Stores flat internal museum locations.
 | `archived_at` | `TIMESTAMPTZ NULL` | Archive time |
 | `archived_by_device_id` | `UUID NULL REFERENCES registered_devices(id)` | Audit |
 
-Locations with history should never be hard-deleted.
+Rules:
+
+- `parent_location_id = null` means a top-level location
+- child locations may nest recursively
+- backend must reject self-parenting and cycles
+- item placement and internal history rows may reference only leaf locations
+- locations with history should never be hard-deleted
 
 #### `organizations`
 
@@ -513,6 +565,29 @@ Stores external organizations used for rentals and promised destinations.
 
 Organizations are mainly created from rental/planning flows and then reused from suggestions/history.
 
+#### `exhibitions`
+
+Stores exhibitions and the period/location where they happen.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `id` | `BIGSERIAL PRIMARY KEY` | Business id |
+| `name` | `VARCHAR(255) NOT NULL` | Exhibition name |
+| `location_id` | `BIGINT NOT NULL REFERENCES locations(id)` | Leaf internal location where the exhibition happens |
+| `start_date` | `DATE NOT NULL` | Planned/actual start |
+| `end_date` | `DATE NOT NULL` | Planned/actual end |
+| `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | Audit |
+| `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | Audit |
+| `created_by_device_id` | `UUID NULL REFERENCES registered_devices(id)` | Audit |
+| `updated_by_device_id` | `UUID NULL REFERENCES registered_devices(id)` | Audit |
+
+Rules:
+
+- `location_id` must point to a leaf location
+- `start_date` must be less than or equal to `end_date`
+- an active exhibition means the business date is inside the inclusive range `[start_date, end_date]`
+- ended exhibitions remain stored and queryable as history
+
 #### `items`
 
 Stores the current state and planning state for each item.
@@ -523,7 +598,7 @@ Stores the current state and planning state for each item.
 | `main_inventory_number` | `VARCHAR(100) NOT NULL` | Unique, case-insensitive |
 | `title` | `VARCHAR(255) NOT NULL` | Required |
 | `current_presence_type` | `VARCHAR(20) NOT NULL` | `INTERNAL`, `EXTERNAL` |
-| `current_location_id` | `BIGINT NULL REFERENCES locations(id)` | Used when internal |
+| `current_location_id` | `BIGINT NULL REFERENCES locations(id)` | Used when internal, must reference a leaf location |
 | `current_organization_id` | `BIGINT NULL REFERENCES organizations(id)` | Used when external |
 | `promised_organization_id` | `BIGINT NULL REFERENCES organizations(id)` | Planning field |
 | `expected_leave_date` | `DATE NULL` | Planning field |
@@ -539,6 +614,7 @@ Rules:
 
 - when `current_presence_type = INTERNAL`, `current_location_id` must be set and `current_organization_id` must be null
 - when `current_presence_type = EXTERNAL`, `current_organization_id` must be set and `current_location_id` must be null
+- when `current_location_id` is set, it must point to a leaf location
 
 #### `item_secondary_numbers`
 
@@ -578,15 +654,15 @@ Single history table for both internal locations and external organizations.
 | `id` | `BIGSERIAL PRIMARY KEY` | Business id |
 | `item_id` | `BIGINT NOT NULL REFERENCES items(id)` | Parent item |
 | `presence_type` | `VARCHAR(20) NOT NULL` | `INTERNAL`, `EXTERNAL` |
-| `location_id` | `BIGINT NULL REFERENCES locations(id)` | Used for internal rows |
+| `location_id` | `BIGINT NULL REFERENCES locations(id)` | Used for internal rows, must reference a leaf location |
 | `organization_id` | `BIGINT NULL REFERENCES organizations(id)` | Used for external rows |
 | `move_in_date` | `DATE NOT NULL` | Start of that placement period |
 | `expected_return_date` | `DATE NULL` | Only for external rows |
 | `move_out_date` | `DATE NULL` | Null while this row is the current open row |
 | `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | Audit |
 | `updated_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | Audit |
-| `created_by_device_id` | `UUID NULL REFERENCES registered_devices(id)` | Who created the row |
-| `updated_by_device_id` | `UUID NULL REFERENCES registered_devices(id)` | Who closed/edited it |
+| `created_by_device_id` | `UUID NULL REFERENCES registered_devices(id)` | Device/browser/iPhone that created the move/rental row |
+| `updated_by_device_id` | `UUID NULL REFERENCES registered_devices(id)` | Device/browser/iPhone that later closed/edited it |
 
 Rules:
 
@@ -594,19 +670,43 @@ Rules:
 - open row means `move_out_date IS NULL`
 - internal rows:
   - `location_id` set
+  - `location_id` points to a leaf location
   - `organization_id` null
   - `expected_return_date` null
 - external rows:
   - `organization_id` set
   - `location_id` null
   - `expected_return_date` optional
+- `created_by_device_id` is the movement actor record for that history row and should be displayed together with the registered device friendly name when available
+
+#### `exhibition_items`
+
+Stores the item group linked to each exhibition.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `exhibition_id` | `BIGINT NOT NULL REFERENCES exhibitions(id)` | Parent exhibition |
+| `item_id` | `BIGINT NOT NULL REFERENCES items(id)` | Linked item |
+| `created_at` | `TIMESTAMPTZ NOT NULL DEFAULT NOW()` | Audit |
+
+Primary key:
+
+- `(exhibition_id, item_id)`
+
+Rules:
+
+- the same item cannot be linked twice to the same exhibition
+- service-layer validation must reject linking the same item to another exhibition whose date range overlaps
+- when the linked exhibition is active, the linked item must have `current_presence_type = INTERNAL`
+- when the linked exhibition is active, the linked item must have `current_location_id = exhibitions.location_id`
+- ended exhibitions and their linked item rows form the exhibition history record
 
 ### 7.5 Recommended constraints
 
 - Case-insensitive uniqueness:
   - `items.main_inventory_number`
   - `authors.name`
-  - `locations.name`
+  - `locations.name` among siblings with the same parent
   - `organizations.name`
 - Check constraints:
   - valid `role`
@@ -614,6 +714,14 @@ Rules:
   - valid `presence_type`
   - valid current-state combinations on `items`
   - valid target combinations on `item_history`
+  - `exhibitions.start_date <= exhibitions.end_date`
+  - `locations.parent_location_id <> locations.id`
+- Service-layer validations:
+  - prevent location cycles
+  - reject non-leaf locations in item create/move/return flows
+  - reject non-leaf exhibition locations
+  - reject overlapping exhibition memberships for the same item
+  - reject active exhibition memberships whose items are not currently internal at the exhibition location
 - One active history row per item:
   - partial unique index on `item_history(item_id)` where `move_out_date IS NULL`
 - One active session per device:
@@ -624,17 +732,25 @@ Rules:
 Use these indexes from the beginning:
 
 - unique index on `LOWER(items.main_inventory_number)`
+- index on `locations.parent_location_id`
 - index on `items.current_location_id`
 - index on `items.current_organization_id`
 - index on `items.promised_organization_id`
 - unique index on `LOWER(authors.name)`
-- unique index on `LOWER(locations.name)`
+- unique index on `LOWER(locations.name)` where `parent_location_id IS NULL`
+- unique index on `(parent_location_id, LOWER(name))` where `parent_location_id IS NOT NULL`
 - unique index on `LOWER(organizations.name)`
+- index on `exhibitions.location_id`
+- index on `exhibitions.start_date`
+- index on `exhibitions.end_date`
 - index on `item_secondary_numbers(item_id)`
 - index on `LOWER(item_secondary_numbers.secondary_inventory_number)`
 - index on `item_authors(author_id)`
 - index on `item_history(item_id, move_in_date DESC)`
 - partial unique index on `item_history(item_id)` where `move_out_date IS NULL`
+- partial index on `item_history(expected_return_date)` where `presence_type = 'EXTERNAL' AND move_out_date IS NULL AND expected_return_date IS NOT NULL`
+- index on `exhibition_items(exhibition_id)`
+- index on `exhibition_items(item_id)`
 - unique index on `web_access_requests.approval_code`
 - unique index on `mobile_pairing_sessions.pairing_token`
 
@@ -678,19 +794,49 @@ Recommended modules:
   - item CRUD
   - planning updates
   - duplicate main number checks
+  - validate leaf-only internal location targets
+- `exhibitions`
+  - create/edit exhibitions
+  - assign item groups
+  - list planned/active/ended exhibitions
+  - exhibition history queries
+  - expose reminder source data for clients
 - `authors`
   - lookup
   - create during item flows
 - `locations`
-  - list active
-  - add/archive
-  - admin-only management
+  - list active hierarchy
+  - add root or child locations
+  - rename/archive
+  - admin-only hierarchy management
+  - validate hierarchy integrity
 - `organizations`
   - lookup
   - create during planning/rental flows
 - `history`
   - movement/rental event creation
   - item history queries
+  - resolve movement actor device summaries
+  - expose open external rental reminder source data
+
+Location and exhibition rules:
+
+- internal locations are stored as a parent-child tree
+- root locations have no parent
+- child locations can nest recursively
+- location names only need to be unique among siblings under the same parent
+- item create/move/return flows may reference only leaf locations
+- re-parenting an existing location is not part of the prototype contract
+- location APIs should expose enough metadata for clients to render hierarchy and leaf-only selectors
+- each exhibition points to one internal leaf location
+- the same item cannot belong to two exhibitions whose date ranges overlap
+- during an active exhibition, included items must remain `INTERNAL` and their `current_location_id` must exactly equal the exhibition location
+- ended exhibitions and linked items remain queryable as exhibition history
+- iPhone and web clients schedule local exhibition-end reminders from backend exhibition dates; the backend does not send reminder notifications in the prototype
+- iPhone and web clients also schedule local rental-return reminders 3 days before `expected_return_date` on open external rental rows; the backend does not send reminder notifications in the prototype
+- history APIs should expose the registered device actor for each movement row, including the device's host-set `friendly_name`
+- iPhone offline movement replay should be treated as a normal movement write with an extra expected-source-placement precondition from the queued mobile payload
+- if a replayed iPhone offline movement no longer matches the item's current database placement, the backend should reject it as stale instead of overwriting newer state
 
 ### 8.3 Layered package structure
 
@@ -715,6 +861,7 @@ backend/src/main/java/com/manageit
   /auth
   /devices
   /items
+  /exhibitions
   /authors
   /locations
   /organizations
@@ -734,6 +881,12 @@ The backend should:
 - own all role checks
 - own all history-closing logic
 - own all archive behavior
+- own all location-tree validation and leaf-location enforcement
+- own all exhibition overlap and active-location validation
+- own stale-source validation for replayed iPhone offline movements
+- expose the latest exhibition date range data clients need for local reminder rescheduling
+- expose the latest open external rental return-date and organization data clients need for 3-day local reminder scheduling and rescheduling
+- expose movement actor device summaries for history entries
 - issue tokens
 - revoke tokens
 - expose one shared REST contract for both clients
@@ -772,11 +925,22 @@ Recommended feature modules:
   - item edit
 - `history`
   - per-item chronological history view
+  - moved-by device display
+- `exhibitions`
+  - exhibition list/detail
+  - create/edit exhibition
+  - past exhibition history
+  - local end reminder state
+- `notifications`
+  - local exhibition end reminders
+  - local rental return reminders
 - `planning`
   - promised organization
   - expected leave date
 - `locations-admin`
-  - add location
+  - browse location hierarchy
+  - add root location
+  - add child location
   - rename location
   - archive location
 - `device-startup`
@@ -800,6 +964,7 @@ frontend/src
   /features
     /inventory
     /history
+    /exhibitions
     /planning
     /locations-admin
     /device-startup
@@ -819,6 +984,12 @@ frontend/src
 - use TanStack Query for server state
 - use server-side pagination/filtering/sorting
 - show suggestions for authors and organizations
+- render hierarchical location selectors with full-path labels
+- allow only leaf locations in item placement selectors
+- show planned/active/ended exhibitions with their linked item group
+- show moved-by device friendly name in history views when available
+- schedule, reschedule, and cancel local exhibition-end reminders from the latest exhibition `endDate`
+- schedule, reschedule, and cancel local rental-return reminders 3 calendar days before an open external row's `expectedReturnDate`
 - do not auto-assume an exact typed author/org is an existing one
 - show duplicate main number conflict details if backend returns them
 
@@ -830,12 +1001,16 @@ Include:
 - app icons
 - standalone window metadata
 - install metadata
+- exhibition-end reminders as a client-local feature when browser support and notification permission exist
+- rental-return reminders as a client-local feature when browser support and notification permission exist
 
 Do not rely on in the prototype demo:
 
 - offline data
 - offline writes
 - background sync
+- backend push notifications for exhibition reminders
+- backend push notifications for rental reminders
 
 ## 10. iPhone App Architecture: SwiftUI
 
@@ -854,12 +1029,26 @@ Recommended modules:
   - item list
   - search
   - item detail
+- `Exhibitions`
+  - exhibition list/detail
+  - create/edit exhibition
+  - past exhibition history
 - `ItemEditor`
   - create/edit item
   - planning updates
   - movement/rental events
 - `History`
   - per-item history screen
+  - moved-by device display
+- `Notifications`
+  - local exhibition end reminders
+  - local rental return reminders
+  - reschedule on date edits
+  - cancel on returns or permission changes
+- `OfflineSync`
+  - cached location hierarchy for offline selectors
+  - dedicated offline-movement outbox
+  - replay queued movements when server connectivity returns
 - `Networking`
   - API client
   - request builders
@@ -879,8 +1068,11 @@ iOSApp
     /Pairing
     /Session
     /Inventory
+    /Exhibitions
     /ItemEditor
     /History
+    /Notifications
+    /OfflineSync
   /Networking
   /Models
   /Storage
@@ -895,8 +1087,34 @@ iOSApp
 - wait while host admin finalizes naming
 - store refresh token in Keychain
 - keep access token in memory
+- cache the latest successful location hierarchy locally for offline movement selection
+- keep a dedicated persistent offline-movement outbox
+- show planned/active/ended exhibitions and their linked item groups
+- show moved-by device friendly name in history views when available
+- schedule local exhibition-end reminders from the latest exhibition `endDate`
+- schedule local rental-return reminders 3 calendar days before the latest open external `expectedReturnDate`
+- reschedule or cancel local exhibition reminders when exhibition dates or local notification permissions change
+- reschedule or cancel local rental reminders when expected return dates change, rentals close, or local notification permissions change
+- allow offline movement only for:
+  - internal move
+  - return to internal location
+  - send to external only when the item already has synced planning data from an earlier online state
+- do not allow offline planning changes
+- do not allow more than one unsynchronized offline movement per item
+- synchronize offline movements only from the dedicated outbox storage
+- include the item's expected current source placement when replaying an offline movement to the server
+- surface queued or rejected offline movements clearly in the UI
 - refresh session when needed
 - go directly to inventory list on future launches unless revoked
+
+### 10.3.1 iPhone offline movement prototype rules
+
+- The iPhone prototype may cache read data, but only offline movement writes are supported in this phase.
+- Offline movement depends on the latest successfully cached location hierarchy.
+- The offline outbox is the only source of synchronization for queued movements.
+- If an item already has one unsynchronized movement in the outbox, the iPhone must block queuing another one for that same item.
+- When connectivity to the server returns, the iPhone should replay queued movement rows from the outbox and then refresh affected item data from the server.
+- If the server rejects a replay because the queued expected source placement no longer matches the current database state, the iPhone should keep that outbox row as rejected/stale for user review instead of silently dropping it.
 
 ## 11. API Design
 
@@ -980,7 +1198,9 @@ Notes:
 - Web uses refresh token cookie.
 - iPhone sends the refresh token from Keychain through the mobile API client.
 
-### 11.4 Protected item endpoints
+### 11.4 Protected inventory endpoints
+
+#### Item endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -990,22 +1210,76 @@ Notes:
 | `PUT` | `/api/items/{id}` | Edit core item metadata |
 | `PATCH` | `/api/items/{id}/planning` | Update promised org / expected leave date |
 | `POST` | `/api/items/{id}/movements` | Add a new move/rental/return event |
-| `GET` | `/api/items/{id}/history` | Chronological actual history |
+| `GET` | `/api/items/{id}/history` | Chronological actual history with move actor metadata |
 | `POST` | `/api/items/{id}/archive` | Archive item, admin only |
 | `GET` | `/api/items/conflicts/main-number` | Optional UX pre-check helper |
+
+#### Exhibition endpoints
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/exhibitions` | List planned/active/ended exhibitions |
+| `POST` | `/api/exhibitions` | Create exhibition and item group |
+| `GET` | `/api/exhibitions/{id}` | Exhibition detail with location and item group |
+| `PUT` | `/api/exhibitions/{id}` | Edit exhibition dates/location/item group |
 
 ### 11.5 Lookup endpoints
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/api/locations` | List active locations for selection |
-| `POST` | `/api/locations` | Create location, admin only |
+| `GET` | `/api/locations` | List active location hierarchy for selection/admin UIs |
+| `POST` | `/api/locations` | Create root or child location, admin only |
 | `PUT` | `/api/locations/{id}` | Rename location, admin only |
 | `POST` | `/api/locations/{id}/archive` | Archive location, admin only |
 | `GET` | `/api/authors` | Search author suggestions |
 | `POST` | `/api/authors` | Create author during item flow |
 | `GET` | `/api/organizations` | Search organization suggestions |
 | `POST` | `/api/organizations` | Create organization during planning/rental flow |
+
+#### Location API contract notes
+
+For location-related APIs:
+
+- locations are hierarchical, not flat
+- names must be unique case-insensitively among siblings under the same parent
+- only leaf locations may be used in item create/move/return flows
+- `POST /api/locations` accepts `name` plus optional `parentLocationId`
+- omitting `parentLocationId` creates a top-level location
+- `PUT /api/locations/{id}` renames only
+- re-parenting an existing location is not supported in the prototype
+- `GET /api/locations` should expose hierarchy metadata needed by clients, such as `id`, `name`, `parentLocationId`, a human-readable full path, and whether the node is assignable
+- the exact transport for `GET /api/locations` may be a nested tree or a flat list with parent references, as long as those semantics are preserved
+
+#### Exhibition API contract notes
+
+For exhibition-related APIs:
+
+- every exhibition points to one internal leaf location
+- `startDate` must be less than or equal to `endDate`
+- the same item cannot belong to two exhibitions whose date ranges overlap
+- during an active exhibition, every linked item must still be `INTERNAL` and have `currentLocationId = locationId`
+- `GET /api/exhibitions` should expose list metadata such as `id`, `name`, `locationId`, `locationPath`, `startDate`, `endDate`, `phase`, and `itemCount`
+- `GET /api/exhibitions/{id}` should expose the full linked item set plus the location path
+- exhibition reminders are client-local only; the backend returns the dates needed for clients to schedule or reschedule reminders, but does not send push reminders
+- when exhibition dates change, clients should replace any previously scheduled local reminder for that exhibition with one based on the latest returned `endDate`
+- exact `EDITOR` versus `ADMIN` write permissions for exhibition create/edit are intentionally left to the security policy and are not fixed in this document
+
+#### Movement and history API contract notes
+
+For movement-related APIs:
+
+- creating a movement row records the authenticated registered device as the actor in `item_history.created_by_device_id`
+- history responses should expose a resolved actor summary such as `movedByDevice.id`, `movedByDevice.friendlyName`, and `movedByDevice.deviceType`
+- when a protected write is performed by the host-admin session rather than a registered device, actor device info may be absent
+- open external rental rows with `expectedReturnDate` are the source for client-local return reminders
+- clients should schedule the rental reminder 3 calendar days before `expectedReturnDate`
+- reminder-capable responses should include enough context for clients to say which item is currently at which organization and that it is due back in 3 days
+- if the open rental row changes `expectedReturnDate` or closes on return, clients should replace or cancel the local reminder from the latest backend data
+- the iPhone offline-movement prototype replays queued movement writes from a dedicated local outbox
+- a replayed offline movement write must include the item's expected current source placement from the iPhone's last known synced state
+- before applying a replayed offline movement, the server must compare that expected source placement with the item's current database state
+- if the server's current item placement does not match the queued expected source placement, the server must reject that replay as stale instead of overwriting newer state
+- offline planning sync is not part of the prototype contract
 
 ### 11.6 Example payloads
 
@@ -1116,6 +1390,43 @@ Content-Type: application/json
 }
 ```
 
+#### Create child location
+
+```http
+POST /api/locations
+Content-Type: application/json
+Authorization: Bearer <access-token>
+```
+
+```json
+{
+  "name": "Shelf 1",
+  "parentLocationId": 3
+}
+```
+
+Omit `parentLocationId` to create a top-level location.
+
+#### Create exhibition
+
+```http
+POST /api/exhibitions
+Content-Type: application/json
+Authorization: Bearer <access-token>
+```
+
+```json
+{
+  "name": "Autumn Masks 2026",
+  "locationId": 8,
+  "startDate": "2026-09-10",
+  "endDate": "2026-10-15",
+  "itemIds": [45, 46, 52]
+}
+```
+
+`locationId` must reference a leaf internal location.
+
 #### Create item
 
 ```http
@@ -1140,6 +1451,8 @@ Authorization: Bearer <access-token>
   "moveInDate": "2026-05-06"
 }
 ```
+
+`initialLocationId` must reference a leaf location.
 
 #### Update planning fields
 
@@ -1185,6 +1498,28 @@ Authorization: Bearer <access-token>
 }
 ```
 
+`locationId` must reference a leaf location.
+
+#### Edit exhibition dates and item group
+
+```http
+PUT /api/exhibitions/12
+Content-Type: application/json
+Authorization: Bearer <access-token>
+```
+
+```json
+{
+  "name": "Autumn Masks 2026",
+  "locationId": 8,
+  "startDate": "2026-09-12",
+  "endDate": "2026-10-20",
+  "itemIds": [45, 46, 52, 60]
+}
+```
+
+Clients must reschedule any local end reminder for exhibition `12` from the latest returned `endDate`.
+
 #### Rent item to external organization
 
 ```http
@@ -1203,6 +1538,33 @@ Authorization: Bearer <access-token>
   "expectedReturnDate": "2026-06-20"
 }
 ```
+
+#### Example item history response entry
+
+```json
+{
+  "entries": [
+    {
+      "id": 91,
+      "presenceType": "EXTERNAL",
+      "organization": {
+        "id": 7,
+        "name": "Museum of Rome"
+      },
+      "moveInDate": "2026-05-20",
+      "expectedReturnDate": "2026-06-20",
+      "moveOutDate": null,
+      "movedByDevice": {
+        "id": "3f56cde0-9b72-44fd-b74c-b0dfc039de3a",
+        "friendlyName": "Front Desk Chrome",
+        "deviceType": "WEB_BROWSER"
+      }
+    }
+  ]
+}
+```
+
+Clients can derive the 3-day rental return reminder from the open external row with `expectedReturnDate`.
 
 ### 11.7 Standard error shape
 
@@ -1232,7 +1594,8 @@ Use one consistent error structure:
         "id": 45,
         "title": "Mask of the Harvest Festival",
         "currentPresenceType": "INTERNAL",
-        "currentLocationName": "Storage 1"
+        "currentLocationName": "Grid A",
+        "currentLocationPath": "Storage 1 > Shelf 2 > Grid A"
       }
     }
   }
@@ -1270,6 +1633,28 @@ This lets the frontend offer:
 }
 ```
 
+#### Overlapping exhibition item example
+
+```json
+{
+  "error": {
+    "code": "ITEM_EXHIBITION_OVERLAP",
+    "message": "One or more items already belong to another exhibition in an overlapping period",
+    "details": {
+      "itemIds": [45],
+      "conflictingExhibitions": [
+        {
+          "id": 12,
+          "name": "Autumn Masks 2026",
+          "startDate": "2026-09-10",
+          "endDate": "2026-10-15"
+        }
+      ]
+    }
+  }
+}
+```
+
 ## 12. Search, List, and Visibility Rules
 
 ### 12.1 Item list/search
@@ -1281,6 +1666,7 @@ Search should support:
 - title
 - author name
 - current location name
+- current location full path
 
 Search behavior:
 
@@ -1299,26 +1685,48 @@ When no filter is set:
 Defaults:
 
 - archived items hidden by default
-- archived locations hidden from selection/search by default
+- archived locations hidden from tree selection/search by default
 - archived authors hidden from suggestion lists by default
 - archived organizations hidden from suggestion lists by default
 
-Admin-only option:
+Admin-capable option:
 
 - `includeArchived=true`
+  - allowed for admin devices
+  - allowed for authenticated host-admin sessions
 
 ### 12.3 Item detail screen layout
 
 The item detail UI should show two separate sections:
 
 1. `Current / Planned Status`
-   - current location or current organization
+   - current location path or current organization
+   - current exhibition, if active
    - promised organization
    - expected leave date
 2. `History`
    - actual internal/external placement records only
+   - moved-by device friendly name when available
 
 Promised fields are visible in the UI but do not create timeline rows by themselves.
+
+### 12.4 Exhibition reminder behavior
+
+- Exhibition reminders are client-local only.
+- The web/PWA should schedule reminders from the latest exhibition `endDate` returned by the backend.
+- If an exhibition date range changes, the client must reschedule the existing reminder for that exhibition.
+- If an exhibition disappears from the accessible dataset or notification permission is removed, the client should cancel its local reminder.
+- Exact reminder timing is a frontend product decision and is not fixed by this architecture document.
+- Browser/PWA reminder delivery is best-effort and depends on notification permission and platform support.
+
+### 12.5 Rental return reminder behavior
+
+- Rental return reminders are client-local only.
+- The web/PWA should schedule a reminder 3 calendar days before `expectedReturnDate` for an open external rental row.
+- The reminder should identify the item and the organization where it is currently recorded, and say it is due back in 3 days.
+- If `expectedReturnDate` changes, the client must reschedule the existing reminder for that rental row.
+- If the rental row closes on return, disappears from the accessible dataset, or notification permission is removed, the client should cancel its local reminder.
+- Browser/PWA reminder delivery is best-effort and depends on notification permission and platform support.
 
 ## 13. Caddy: What It Does and Why It Is Here
 
@@ -1552,7 +1960,10 @@ Useful routes in development:
 - planning updates
 - movement/rental events
 - per-item history
-- location management for admin devices
+- exhibition list/detail/history
+- protected exhibition management APIs according to role checks
+- hierarchical location management for admin devices
+- the same protected APIs may also be used by an authenticated host-admin session
 
 ### Role differences
 
@@ -1568,8 +1979,10 @@ Useful routes in development:
 `ADMIN` can do everything `EDITOR` can, plus:
 
 - archive items
-- create/edit/archive locations
+- create root/child locations, rename locations, archive locations
 - use admin-level inventory actions in the regular client app
+
+The host admin can also use any protected API regardless of device role, because it is a separate trusted operator session rather than a registered device.
 
 Only the host-only admin UI can:
 
@@ -1584,7 +1997,7 @@ Only the host-only admin UI can:
 Build the prototype in this order:
 
 1. Create backend project with modules:
-   - `settings`, `auth`, `devices`, `items`, `authors`, `locations`, `organizations`, `history`
+   - `settings`, `auth`, `devices`, `items`, `exhibitions`, `authors`, `locations`, `organizations`, `history`
 2. Add PostgreSQL and Flyway.
 3. Create migrations for:
    - `app_settings`
@@ -1595,22 +2008,25 @@ Build the prototype in this order:
 6. Implement iPhone QR pairing flow.
 7. Implement web access request + approval flow.
 8. Implement item create flow with:
-   - initial location
+   - initial leaf location
    - authors
    - secondary numbers
    - first history row
 9. Implement movement/rental/return logic and current-state updates.
-10. Implement item list/search/history APIs.
-11. Build React app:
+10. Implement exhibition create/edit/list/history APIs and overlap validation.
+11. Implement item list/search/history APIs.
+12. Build React app:
     - regular client routes
     - host admin routes
     - device startup screen
-12. Build SwiftUI iPhone app:
+    - exhibition screens and local reminder handling
+13. Build SwiftUI iPhone app:
     - QR scan
     - activation wait screen
     - inventory list/detail/edit/history
-13. Add Caddy + Docker Compose.
-14. Demo on:
+    - exhibition screens and local reminder handling
+14. Add Caddy + Docker Compose.
+15. Demo on:
     - your computer as server
     - your iPhone as editor device
 
@@ -1626,6 +2042,8 @@ At the end of the prototype, you should have:
 - one iPhone app that scans QR once and then opens directly into inventory on later launches
 - full item current-state tracking
 - full item movement/rental history
+- exhibition planning/active/history tracking
+- client-local exhibition end reminders on supported iPhone/web clients
 - device approval/revocation
 
 This is a strong prototype for the challenge because it demonstrates:

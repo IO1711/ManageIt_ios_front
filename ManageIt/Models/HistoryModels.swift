@@ -54,7 +54,7 @@ struct ItemHistoryEntry: Identifiable, Equatable {
 
     var targetName: String {
         switch presenceType {
-        case .internal: return location?.name ?? "—"
+        case .internal: return location?.displayPath ?? "—"
         case .external: return organization?.name ?? "—"
         }
     }

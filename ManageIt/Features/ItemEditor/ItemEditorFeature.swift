@@ -5,6 +5,8 @@ struct ItemEditorView: View {
     let onCompleted: (ItemResponse) -> Void
     let onCancel: () -> Void
 
+    @State private var showLocationPicker = false
+
     var body: some View {
         @Bindable var store = store
 
@@ -41,6 +43,16 @@ struct ItemEditorView: View {
                 onCompleted(saved)
             }
         }
+        .sheet(isPresented: $showLocationPicker) {
+            LocationTreePicker(
+                allLocations: store.availableLocations,
+                onSelect: { selected in
+                    store.selectInitialLocation(selected)
+                    showLocationPicker = false
+                },
+                onCancel: { showLocationPicker = false }
+            )
+        }
     }
 
     private func mainFieldsSection(store: ItemEditorFeatureModel) -> some View {
@@ -60,7 +72,7 @@ struct ItemEditorView: View {
             if let conflict = store.mainNumberConflict, conflict.available == false,
                let conflicting = conflict.conflictingItem {
                 inlineMessage(
-                    text: "Already used by “\(conflicting.title)” at \(conflicting.currentLocationName ?? "—").",
+                    text: "Already used by “\(conflicting.title)” at \(conflicting.displayPlacement).",
                     tone: .rejected
                 )
             }
@@ -179,20 +191,11 @@ struct ItemEditorView: View {
         return VStack(alignment: .leading, spacing: 14) {
             sectionHeader("Initial placement")
 
-            FormFieldContainer(title: "Internal location") {
-                Picker("Initial location", selection: Binding(
-                    get: { store.initialLocationID ?? -1 },
-                    set: { store.initialLocationID = $0 == -1 ? nil : $0 }
-                )) {
-                    Text("Select location").tag(Int64(-1))
-                    ForEach(store.availableLocations) { location in
-                        Text(location.name).tag(location.id)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .tint(AppTheme.ink)
-            }
+            LocationTreeField(
+                title: "Internal leaf location",
+                selected: store.selectedInitialLocation,
+                onTap: { showLocationPicker = true }
+            )
 
             FormFieldContainer(title: "Move-in date") {
                 BusinessDatePickerField(date: Binding(

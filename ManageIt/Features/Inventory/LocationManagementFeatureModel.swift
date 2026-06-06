@@ -7,11 +7,16 @@ final class LocationManagementFeatureModel {
     var locations: [LocationResponse] = []
     var includeArchived: Bool = false
     var draftLocationName: String = ""
+    var draftParent: LocationResponse?
     var editingLocationID: Int64?
     var editingName: String = ""
     var isLoading: Bool = false
     var isSaving: Bool = false
     var errorMessage: String?
+
+    /// Built from the flat `locations` list — used by the tree picker for parent
+    /// selection and the management list display.
+    var tree: [LocationTreeNode] { LocationTreeBuilder.build(from: locations) }
 
     var storedContext: StoredDeviceContext
 
@@ -73,17 +78,29 @@ final class LocationManagementFeatureModel {
     func createLocation() async {
         let trimmed = draftLocationName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        let parentId = draftParent?.id
         isSaving = true
         defer { isSaving = false }
         do {
             let created = try await authenticated.perform { url, token in
-                try await self.apiClient.createLocation(serverURL: url, accessToken: token, request: LocationCreateRequest(name: trimmed))
+                try await self.apiClient.createLocation(
+                    serverURL: url,
+                    accessToken: token,
+                    request: LocationCreateRequest(name: trimmed, parentLocationId: parentId)
+                )
             }
             locations.append(created)
             draftLocationName = ""
+            draftParent = nil
+            // Reload so paths and parent references refresh for the new node and its siblings.
+            await load()
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
+    }
+
+    func selectDraftParent(_ location: LocationResponse?) {
+        draftParent = location
     }
 
     func beginEditing(_ location: LocationResponse) {

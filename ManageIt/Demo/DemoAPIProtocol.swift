@@ -100,10 +100,12 @@ final class DemoDataStore: @unchecked Sendable {
             return success(itemListJSON(url: url))
         }
         if method == "POST" && path == "/api/items" {
-            if let item = createItem(bodyData: bodyData) {
+            switch createItem(bodyData: bodyData) {
+            case .success(let item):
                 return success(itemJSON(item))
+            case .failure(let body):
+                return (400, body)
             }
-            return (400, nil)
         }
         if method == "GET" && path == "/api/locations" {
             let include = url.queryValue("includeArchived") == "true"
@@ -111,10 +113,12 @@ final class DemoDataStore: @unchecked Sendable {
             return success(arrayData(filtered.map(locationDict)))
         }
         if method == "POST" && path == "/api/locations" {
-            if let loc = createLocation(bodyData: bodyData) {
+            switch createLocation(bodyData: bodyData) {
+            case .success(let loc):
                 return success(dictData(locationDict(loc)))
+            case .failure(let body):
+                return (400, body)
             }
-            return (400, nil)
         }
         if method == "GET" && path == "/api/authors" {
             let q = url.queryValue("q")?.lowercased() ?? ""
@@ -144,10 +148,12 @@ final class DemoDataStore: @unchecked Sendable {
             return success(historyJSON(itemId: id))
         }
         if let id = extractTrailingId(path: path, prefix: "/api/items/", suffix: "/movements"), method == "POST" {
-            if let item = createMovement(itemId: id, bodyData: bodyData) {
+            switch createMovement(itemId: id, bodyData: bodyData) {
+            case .success(let item):
                 return success(itemJSON(item))
+            case .failure(let body):
+                return (400, body)
             }
-            return (404, nil)
         }
         if let id = extractTrailingId(path: path, prefix: "/api/items/", suffix: "/planning"), method == "PATCH" {
             if let item = updatePlanning(itemId: id, bodyData: bodyData) {
@@ -185,32 +191,79 @@ final class DemoDataStore: @unchecked Sendable {
         return (404, nil)
     }
 
+    // MARK: - Helpers shared across mutators
+
+    private func locationIsLeaf(_ id: Int64) -> Bool {
+        !locations.contains { $0.parentLocationId == id }
+    }
+
+    private func locationPath(_ id: Int64) -> String {
+        var chain: [String] = []
+        var cursor: Int64? = id
+        var safetyCounter = 0
+        while let current = cursor, safetyCounter < 32 {
+            guard let loc = locations.first(where: { $0.id == current }) else { break }
+            chain.insert(loc.name, at: 0)
+            cursor = loc.parentLocationId
+            safetyCounter += 1
+        }
+        return chain.joined(separator: " > ")
+    }
+
+    private func resolveAuthorInput(_ input: [String: Any]) -> Int64? {
+        if let aid = (input["id"] as? Int).map(Int64.init) ?? (input["id"] as? Int64) {
+            return aid
+        }
+        if let name = input["name"] as? String, !name.isEmpty {
+            if let existing = authors.first(where: { $0.name.lowercased() == name.lowercased() }) {
+                return existing.id
+            }
+            let newAuthor = DemoAuthor(id: nextAuthorId, name: name, archived: false)
+            nextAuthorId += 1
+            authors.append(newAuthor)
+            return newAuthor.id
+        }
+        return nil
+    }
+
+    private func resolveOrgInput(_ input: [String: Any]) -> Int64? {
+        if let oid = (input["id"] as? Int).map(Int64.init) ?? (input["id"] as? Int64) {
+            return oid
+        }
+        if let name = input["name"] as? String, !name.isEmpty {
+            if let existing = organizations.first(where: { $0.name.lowercased() == name.lowercased() }) {
+                return existing.id
+            }
+            let new = DemoOrg(id: nextOrgId, name: name, archived: false)
+            nextOrgId += 1
+            organizations.append(new)
+            return new.id
+        }
+        return nil
+    }
+
     // MARK: - Item mutations
 
-    private func createItem(bodyData: Data?) -> DemoItem? {
+    private func createItem(bodyData: Data?) -> MutationResult<DemoItem> {
         guard let data = bodyData,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
+        else { return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Invalid item payload")) }
+
+        guard let locationId = (json["initialLocationId"] as? Int).map(Int64.init) ?? (json["initialLocationId"] as? Int64) else {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "initialLocationId is required"))
+        }
+        guard let location = locations.first(where: { $0.id == locationId }) else {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Unknown location"))
+        }
+        guard locationIsLeaf(locationId), !location.archived else {
+            return .failure(errorEnvelope(code: "NON_LEAF_LOCATION", message: "Items can only be placed in leaf locations"))
+        }
+
         let id = nextItemId; nextItemId += 1
         let authorIds: [Int64] = {
             guard let arr = json["authors"] as? [[String: Any]] else { return [] }
-            return arr.compactMap { input -> Int64? in
-                if let aid = (input["id"] as? Int).map(Int64.init) ?? (input["id"] as? Int64) {
-                    return aid
-                }
-                if let name = input["name"] as? String, !name.isEmpty {
-                    if let existing = authors.first(where: { $0.name.lowercased() == name.lowercased() }) {
-                        return existing.id
-                    }
-                    let newAuthor = DemoAuthor(id: nextAuthorId, name: name, archived: false)
-                    nextAuthorId += 1
-                    authors.append(newAuthor)
-                    return newAuthor.id
-                }
-                return nil
-            }
+            return arr.compactMap { resolveAuthorInput($0) }
         }()
-        let locationId = (json["initialLocationId"] as? Int).map(Int64.init) ?? (json["initialLocationId"] as? Int64)
         let item = DemoItem(
             id: id,
             mainInventoryNumber: (json["mainInventoryNumber"] as? String) ?? "INV-DEMO-\(id)",
@@ -225,11 +278,11 @@ final class DemoDataStore: @unchecked Sendable {
             archived: false
         )
         items.append(item)
-        if let moveIn = json["moveInDate"] as? String, let lid = locationId {
+        if let moveIn = json["moveInDate"] as? String {
             let entry = DemoHistory(
                 id: nextHistoryId,
                 presenceType: "INTERNAL",
-                locationId: lid,
+                locationId: locationId,
                 organizationId: nil,
                 moveInDate: moveIn,
                 moveOutDate: nil,
@@ -238,7 +291,7 @@ final class DemoDataStore: @unchecked Sendable {
             nextHistoryId += 1
             history[item.id, default: []].append(entry)
         }
-        return item
+        return .success(item)
     }
 
     private func updateItem(itemId: Int64, bodyData: Data?) -> DemoItem? {
@@ -251,21 +304,7 @@ final class DemoDataStore: @unchecked Sendable {
         if let v = json["title"] as? String { item.title = v }
         if let v = json["secondaryInventoryNumbers"] as? [String] { item.secondaryInventoryNumbers = v }
         if let arr = json["authors"] as? [[String: Any]] {
-            item.authorIds = arr.compactMap { input -> Int64? in
-                if let aid = (input["id"] as? Int).map(Int64.init) ?? (input["id"] as? Int64) {
-                    return aid
-                }
-                if let name = input["name"] as? String, !name.isEmpty {
-                    if let existing = authors.first(where: { $0.name.lowercased() == name.lowercased() }) {
-                        return existing.id
-                    }
-                    let newAuthor = DemoAuthor(id: nextAuthorId, name: name, archived: false)
-                    nextAuthorId += 1
-                    authors.append(newAuthor)
-                    return newAuthor.id
-                }
-                return nil
-            }
+            item.authorIds = arr.compactMap { resolveAuthorInput($0) }
         }
         items[idx] = item
         return item
@@ -278,18 +317,7 @@ final class DemoDataStore: @unchecked Sendable {
         else { return nil }
         var item = items[idx]
         if let orgInput = json["promisedOrganization"] as? [String: Any] {
-            if let oid = (orgInput["id"] as? Int).map(Int64.init) ?? (orgInput["id"] as? Int64) {
-                item.promisedOrgId = oid
-            } else if let name = orgInput["name"] as? String {
-                if let existing = organizations.first(where: { $0.name.lowercased() == name.lowercased() }) {
-                    item.promisedOrgId = existing.id
-                } else {
-                    let new = DemoOrg(id: nextOrgId, name: name, archived: false)
-                    nextOrgId += 1
-                    organizations.append(new)
-                    item.promisedOrgId = new.id
-                }
-            }
+            item.promisedOrgId = resolveOrgInput(orgInput)
         } else if json.keys.contains("promisedOrganization") {
             item.promisedOrgId = nil
         }
@@ -308,23 +336,31 @@ final class DemoDataStore: @unchecked Sendable {
         return items[idx]
     }
 
-    private func createMovement(itemId: Int64, bodyData: Data?) -> DemoItem? {
+    private func createMovement(itemId: Int64, bodyData: Data?) -> MutationResult<DemoItem> {
         guard let idx = items.firstIndex(where: { $0.id == itemId }),
               let data = bodyData,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
+        else { return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Invalid movement payload")) }
+
         var item = items[idx]
         let presenceType = (json["presenceType"] as? String) ?? "INTERNAL"
         let moveInDate = (json["moveInDate"] as? String) ?? "2026-01-01"
 
-        // Close previous open row
         var rows = history[item.id] ?? []
         if let openIdx = rows.firstIndex(where: { $0.moveOutDate == nil }) {
             rows[openIdx].moveOutDate = moveInDate
         }
 
         if presenceType == "INTERNAL" {
-            let locationId = (json["locationId"] as? Int).map(Int64.init) ?? (json["locationId"] as? Int64)
+            guard let locationId = (json["locationId"] as? Int).map(Int64.init) ?? (json["locationId"] as? Int64) else {
+                return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "locationId required for internal movement"))
+            }
+            guard let loc = locations.first(where: { $0.id == locationId }), !loc.archived else {
+                return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Unknown destination location"))
+            }
+            guard locationIsLeaf(locationId) else {
+                return .failure(errorEnvelope(code: "NON_LEAF_LOCATION", message: "Items can only be placed in leaf locations"))
+            }
             item.presenceType = "INTERNAL"
             item.locationId = locationId
             item.organizationId = nil
@@ -343,21 +379,13 @@ final class DemoDataStore: @unchecked Sendable {
         } else {
             var orgId: Int64? = nil
             if let orgInput = json["organization"] as? [String: Any] {
-                if let oid = (orgInput["id"] as? Int).map(Int64.init) ?? (orgInput["id"] as? Int64) {
-                    orgId = oid
-                } else if let name = orgInput["name"] as? String {
-                    if let existing = organizations.first(where: { $0.name.lowercased() == name.lowercased() }) {
-                        orgId = existing.id
-                    } else {
-                        let new = DemoOrg(id: nextOrgId, name: name, archived: false)
-                        nextOrgId += 1
-                        organizations.append(new)
-                        orgId = new.id
-                    }
-                }
+                orgId = resolveOrgInput(orgInput)
+            }
+            guard let resolved = orgId else {
+                return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "organization required for external rental"))
             }
             item.presenceType = "EXTERNAL"
-            item.organizationId = orgId
+            item.organizationId = resolved
             item.locationId = nil
             item.promisedOrgId = nil
             item.expectedLeaveDate = nil
@@ -365,7 +393,7 @@ final class DemoDataStore: @unchecked Sendable {
                 id: nextHistoryId,
                 presenceType: "EXTERNAL",
                 locationId: nil,
-                organizationId: orgId,
+                organizationId: resolved,
                 moveInDate: moveInDate,
                 moveOutDate: nil,
                 expectedReturnDate: json["expectedReturnDate"] as? String
@@ -375,19 +403,29 @@ final class DemoDataStore: @unchecked Sendable {
 
         history[item.id] = rows
         items[idx] = item
-        return item
+        return .success(item)
     }
 
     // MARK: - Location mutations
 
-    private func createLocation(bodyData: Data?) -> DemoLocation? {
+    private func createLocation(bodyData: Data?) -> MutationResult<DemoLocation> {
         guard let data = bodyData,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let name = json["name"] as? String else { return nil }
-        let loc = DemoLocation(id: nextLocationId, name: name, archived: false)
+              let name = json["name"] as? String else {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "name is required"))
+        }
+        let parentId = (json["parentLocationId"] as? Int).map(Int64.init) ?? (json["parentLocationId"] as? Int64)
+        if let parentId, !locations.contains(where: { $0.id == parentId }) {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Unknown parent location"))
+        }
+        // sibling-scope uniqueness
+        if locations.contains(where: { $0.parentLocationId == parentId && $0.name.lowercased() == name.lowercased() && !$0.archived }) {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Sibling location with this name already exists"))
+        }
+        let loc = DemoLocation(id: nextLocationId, name: name, archived: false, parentLocationId: parentId)
         nextLocationId += 1
         locations.append(loc)
-        return loc
+        return .success(loc)
     }
 
     private func updateLocation(id: Int64, bodyData: Data?) -> DemoLocation? {
@@ -468,12 +506,15 @@ final class DemoDataStore: @unchecked Sendable {
             "conflictingItem": NSNull()
         ]
         if let conflict {
-            let locName = conflict.locationId.flatMap { lid in locations.first(where: { $0.id == lid })?.name }
+            let locName: Any = conflict.locationId
+                .flatMap { lid in locations.first(where: { $0.id == lid })?.name } ?? NSNull()
+            let locPath: Any = conflict.locationId.map { locationPath($0) } ?? NSNull()
             body["conflictingItem"] = [
                 "id": conflict.id,
                 "title": conflict.title,
                 "currentPresenceType": conflict.presenceType,
-                "currentLocationName": locName ?? NSNull()
+                "currentLocationName": locName,
+                "currentLocationPath": locPath
             ] as [String: Any]
         }
         return dictData(body)
@@ -496,7 +537,9 @@ final class DemoDataStore: @unchecked Sendable {
                 if item.secondaryInventoryNumbers.contains(where: { $0.lowercased().contains(q) }) { return true }
                 let names = item.authorIds.compactMap { aid in authors.first(where: { $0.id == aid })?.name.lowercased() }
                 if names.contains(where: { $0.contains(q) }) { return true }
-                if let lid = item.locationId, let loc = locations.first(where: { $0.id == lid }), loc.name.lowercased().contains(q) { return true }
+                if let lid = item.locationId {
+                    if locationPath(lid).lowercased().contains(q) { return true }
+                }
                 return false
             }
         }
@@ -530,7 +573,7 @@ final class DemoDataStore: @unchecked Sendable {
                 "expectedReturnDate": row.expectedReturnDate as Any? ?? NSNull()
             ]
             if let lid = row.locationId, let loc = locations.first(where: { $0.id == lid }) {
-                dict["location"] = ["id": loc.id, "name": loc.name]
+                dict["location"] = ["id": loc.id, "name": loc.name, "path": locationPath(lid)]
             }
             if let oid = row.organizationId, let org = organizations.first(where: { $0.id == oid }) {
                 dict["organization"] = ["id": org.id, "name": org.name]
@@ -552,7 +595,11 @@ final class DemoDataStore: @unchecked Sendable {
             "organization": NSNull()
         ]
         if let lid = item.locationId, let loc = locations.first(where: { $0.id == lid }) {
-            placement["location"] = ["id": loc.id, "name": loc.name]
+            placement["location"] = [
+                "id": loc.id,
+                "name": loc.name,
+                "path": locationPath(lid)
+            ]
         }
         if let oid = item.organizationId, let org = organizations.first(where: { $0.id == oid }) {
             placement["organization"] = ["id": org.id, "name": org.name]
@@ -584,7 +631,20 @@ final class DemoDataStore: @unchecked Sendable {
     }
 
     private func locationDict(_ loc: DemoLocation) -> [String: Any] {
-        ["id": loc.id, "name": loc.name, "archived": loc.archived]
+        let isLeaf = locationIsLeaf(loc.id)
+        let assignable = isLeaf && !loc.archived
+        var dict: [String: Any] = [
+            "id": loc.id,
+            "name": loc.name,
+            "archived": loc.archived,
+            "path": locationPath(loc.id),
+            "assignable": assignable,
+            "parentLocationId": NSNull()
+        ]
+        if let parent = loc.parentLocationId {
+            dict["parentLocationId"] = parent
+        }
+        return dict
     }
 
     private func authorDict(_ a: DemoAuthor) -> [String: Any] {
@@ -605,6 +665,17 @@ final class DemoDataStore: @unchecked Sendable {
 
     private func arrayData(_ array: [[String: Any]]) -> Data {
         (try? JSONSerialization.data(withJSONObject: array, options: [])) ?? Data()
+    }
+
+    private func errorEnvelope(code: String, message: String) -> Data {
+        let envelope: [String: Any] = [
+            "error": [
+                "code": code,
+                "message": message,
+                "details": [:]
+            ]
+        ]
+        return dictData(envelope)
     }
 
     private func extractTrailingId(path: String, prefix: String, suffix: String?) -> Int64? {
@@ -642,6 +713,13 @@ final class DemoDataStore: @unchecked Sendable {
 
 // MARK: - In-memory models
 
+/// Two-state outcome for mutating demo endpoints. Uses a custom enum instead of
+/// `Result` because the failure payload is a raw JSON `Data` blob, not an `Error`.
+private enum MutationResult<T> {
+    case success(T)
+    case failure(Data)
+}
+
 private struct DemoItem {
     var id: Int64
     var mainInventoryNumber: String
@@ -656,7 +734,13 @@ private struct DemoItem {
     var archived: Bool
 }
 
-private struct DemoLocation { var id: Int64; var name: String; var archived: Bool }
+private struct DemoLocation {
+    var id: Int64
+    var name: String
+    var archived: Bool
+    var parentLocationId: Int64?
+}
+
 private struct DemoAuthor { var id: Int64; var name: String; var archived: Bool }
 private struct DemoOrg { var id: Int64; var name: String; var archived: Bool }
 
@@ -678,13 +762,38 @@ private enum DemoSeed {
         organizations: [DemoOrg],
         history: [Int64: [DemoHistory]]
     ) {
+        // Tree:
+        //   Hall A
+        //     Display Case 1
+        //       Shelf 1 (leaf)
+        //       Shelf 2 (leaf)
+        //     Display Case 2 (leaf)
+        //   Hall B
+        //     Display Case 3 (leaf)
+        //   Storage 1
+        //     Shelf A (leaf)
+        //     Shelf B
+        //       Drawer 1 (leaf)
+        //       Drawer 2 (leaf)
+        //   Gallery 2 (leaf, root)
+        //   Restoration room (leaf, root)
+        //   Old wing (root, archived, leaf)
         let locations: [DemoLocation] = [
-            DemoLocation(id: 1, name: "Hall A", archived: false),
-            DemoLocation(id: 2, name: "Hall B", archived: false),
-            DemoLocation(id: 3, name: "Storage 1", archived: false),
-            DemoLocation(id: 4, name: "Gallery 2", archived: false),
-            DemoLocation(id: 5, name: "Restoration room", archived: false),
-            DemoLocation(id: 6, name: "Old wing (archived)", archived: true),
+            DemoLocation(id: 1, name: "Hall A", archived: false, parentLocationId: nil),
+            DemoLocation(id: 2, name: "Hall B", archived: false, parentLocationId: nil),
+            DemoLocation(id: 3, name: "Storage 1", archived: false, parentLocationId: nil),
+            DemoLocation(id: 4, name: "Gallery 2", archived: false, parentLocationId: nil),
+            DemoLocation(id: 5, name: "Restoration room", archived: false, parentLocationId: nil),
+            DemoLocation(id: 6, name: "Display Case 1", archived: false, parentLocationId: 1),
+            DemoLocation(id: 7, name: "Display Case 2", archived: false, parentLocationId: 1),
+            DemoLocation(id: 8, name: "Shelf 1", archived: false, parentLocationId: 6),
+            DemoLocation(id: 9, name: "Shelf 2", archived: false, parentLocationId: 6),
+            DemoLocation(id: 10, name: "Display Case 3", archived: false, parentLocationId: 2),
+            DemoLocation(id: 11, name: "Shelf A", archived: false, parentLocationId: 3),
+            DemoLocation(id: 12, name: "Shelf B", archived: false, parentLocationId: 3),
+            DemoLocation(id: 13, name: "Drawer 1", archived: false, parentLocationId: 12),
+            DemoLocation(id: 14, name: "Drawer 2", archived: false, parentLocationId: 12),
+            DemoLocation(id: 15, name: "Old wing", archived: true, parentLocationId: nil),
         ]
         let authors: [DemoAuthor] = [
             DemoAuthor(id: 1, name: "Ivan Shishkin", archived: false),
@@ -699,6 +808,7 @@ private enum DemoSeed {
             DemoOrg(id: 3, name: "Louvre", archived: false),
             DemoOrg(id: 4, name: "Tate Modern", archived: false),
         ]
+        // All items now live in leaf locations only.
         let items: [DemoItem] = [
             DemoItem(
                 id: 1,
@@ -707,7 +817,7 @@ private enum DemoSeed {
                 secondaryInventoryNumbers: ["A-15"],
                 authorIds: [1],
                 presenceType: "INTERNAL",
-                locationId: 4,
+                locationId: 4, // Gallery 2 (leaf root)
                 organizationId: nil,
                 promisedOrgId: nil,
                 expectedLeaveDate: nil,
@@ -733,7 +843,7 @@ private enum DemoSeed {
                 secondaryInventoryNumbers: ["TEMP-77", "B-9"],
                 authorIds: [3],
                 presenceType: "INTERNAL",
-                locationId: 1,
+                locationId: 8, // Hall A > Display Case 1 > Shelf 1
                 organizationId: nil,
                 promisedOrgId: 2,
                 expectedLeaveDate: "2026-06-15",
@@ -746,7 +856,7 @@ private enum DemoSeed {
                 secondaryInventoryNumbers: [],
                 authorIds: [4],
                 presenceType: "INTERNAL",
-                locationId: 3,
+                locationId: 11, // Storage 1 > Shelf A
                 organizationId: nil,
                 promisedOrgId: nil,
                 expectedLeaveDate: nil,
@@ -759,7 +869,7 @@ private enum DemoSeed {
                 secondaryInventoryNumbers: ["TEMP-12"],
                 authorIds: [3],
                 presenceType: "INTERNAL",
-                locationId: 2,
+                locationId: 10, // Hall B > Display Case 3
                 organizationId: nil,
                 promisedOrgId: nil,
                 expectedLeaveDate: nil,
@@ -772,7 +882,7 @@ private enum DemoSeed {
                 secondaryInventoryNumbers: [],
                 authorIds: [5],
                 presenceType: "INTERNAL",
-                locationId: 4,
+                locationId: 7, // Hall A > Display Case 2
                 organizationId: nil,
                 promisedOrgId: 4,
                 expectedLeaveDate: "2026-09-01",
@@ -785,7 +895,7 @@ private enum DemoSeed {
                 secondaryInventoryNumbers: [],
                 authorIds: [3],
                 presenceType: "INTERNAL",
-                locationId: 3,
+                locationId: 13, // Storage 1 > Shelf B > Drawer 1
                 organizationId: nil,
                 promisedOrgId: nil,
                 expectedLeaveDate: nil,
@@ -797,21 +907,21 @@ private enum DemoSeed {
                 DemoHistory(id: 1, presenceType: "INTERNAL", locationId: 4, organizationId: nil, moveInDate: "2024-05-15", moveOutDate: nil, expectedReturnDate: nil)
             ],
             2: [
-                DemoHistory(id: 2, presenceType: "INTERNAL", locationId: 2, organizationId: nil, moveInDate: "2023-09-01", moveOutDate: "2026-04-10", expectedReturnDate: nil),
+                DemoHistory(id: 2, presenceType: "INTERNAL", locationId: 10, organizationId: nil, moveInDate: "2023-09-01", moveOutDate: "2026-04-10", expectedReturnDate: nil),
                 DemoHistory(id: 3, presenceType: "EXTERNAL", locationId: nil, organizationId: 1, moveInDate: "2026-04-10", moveOutDate: nil, expectedReturnDate: "2026-08-10"),
             ],
             3: [
                 DemoHistory(id: 4, presenceType: "INTERNAL", locationId: 5, organizationId: nil, moveInDate: "2025-06-01", moveOutDate: "2025-12-01", expectedReturnDate: nil),
-                DemoHistory(id: 5, presenceType: "INTERNAL", locationId: 1, organizationId: nil, moveInDate: "2025-12-01", moveOutDate: nil, expectedReturnDate: nil),
+                DemoHistory(id: 5, presenceType: "INTERNAL", locationId: 8, organizationId: nil, moveInDate: "2025-12-01", moveOutDate: nil, expectedReturnDate: nil),
             ],
             4: [
-                DemoHistory(id: 6, presenceType: "INTERNAL", locationId: 3, organizationId: nil, moveInDate: "2024-02-12", moveOutDate: nil, expectedReturnDate: nil)
+                DemoHistory(id: 6, presenceType: "INTERNAL", locationId: 11, organizationId: nil, moveInDate: "2024-02-12", moveOutDate: nil, expectedReturnDate: nil)
             ],
             5: [
-                DemoHistory(id: 7, presenceType: "INTERNAL", locationId: 2, organizationId: nil, moveInDate: "2025-01-20", moveOutDate: nil, expectedReturnDate: nil)
+                DemoHistory(id: 7, presenceType: "INTERNAL", locationId: 10, organizationId: nil, moveInDate: "2025-01-20", moveOutDate: nil, expectedReturnDate: nil)
             ],
             6: [
-                DemoHistory(id: 8, presenceType: "INTERNAL", locationId: 4, organizationId: nil, moveInDate: "2025-11-05", moveOutDate: nil, expectedReturnDate: nil)
+                DemoHistory(id: 8, presenceType: "INTERNAL", locationId: 7, organizationId: nil, moveInDate: "2025-11-05", moveOutDate: nil, expectedReturnDate: nil)
             ],
         ]
         return (items, locations, authors, orgs, history)
