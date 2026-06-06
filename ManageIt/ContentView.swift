@@ -29,10 +29,12 @@ struct ContentView: View {
                 )
             case .active:
                 if let inventoryModel = appModel.inventoryModel,
+                   let exhibitionsModel = appModel.exhibitionsModel,
                    let context = appModel.pairedDevice {
                     AuthenticatedRootView(
                         appModel: appModel,
                         inventoryModel: inventoryModel,
+                        exhibitionsModel: exhibitionsModel,
                         context: context
                     )
                 } else {
@@ -146,12 +148,14 @@ struct SessionRecoveryView: View {
 struct AuthenticatedRootView: View {
     let appModel: AppModel
     let inventoryModel: InventoryFeatureModel
+    let exhibitionsModel: ExhibitionsFeatureModel
     let context: StoredDeviceContext
 
     @State private var selectedTab: Tab = .inventory
 
     enum Tab: Hashable {
         case inventory
+        case exhibitions
         case locations
         case account
     }
@@ -166,6 +170,15 @@ struct AuthenticatedRootView: View {
                 Label("Inventory", systemImage: "tray.full.fill")
             }
             .tag(Tab.inventory)
+
+            ExhibitionsStackView(
+                exhibitionsModel: exhibitionsModel,
+                context: context
+            )
+            .tabItem {
+                Label("Exhibitions", systemImage: "rectangle.stack.fill")
+            }
+            .tag(Tab.exhibitions)
 
             if context.role.isAdmin {
                 NavigationStack {
@@ -186,6 +199,127 @@ struct AuthenticatedRootView: View {
             .tag(Tab.account)
         }
         .tint(AppTheme.primary)
+    }
+}
+
+// MARK: - Exhibitions stack
+
+struct ExhibitionsStackView: View {
+    @Bindable var exhibitionsModel: ExhibitionsFeatureModel
+    let context: StoredDeviceContext
+
+    @State private var path: [ExhibitionRoute] = []
+    @State private var createModel: ExhibitionEditorFeatureModel?
+
+    enum ExhibitionRoute: Hashable {
+        case detail(Int64)
+        case edit(Int64)
+    }
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            ExhibitionsFeatureView(
+                store: exhibitionsModel,
+                onSelectExhibition: { id in path.append(.detail(id)) },
+                onCreateExhibition: {
+                    createModel = exhibitionsModel.makeCreateEditorModel()
+                }
+            )
+            .navigationTitle("Exhibitions")
+            .navigationBarTitleDisplayMode(.large)
+            .navigationDestination(for: ExhibitionRoute.self) { route in
+                destinationView(for: route)
+            }
+        }
+        .sheet(item: $createModel) { model in
+            NavigationStack {
+                ExhibitionEditorView(
+                    store: model,
+                    onCompleted: { _ in
+                        createModel = nil
+                        Task { await exhibitionsModel.load() }
+                    },
+                    onCancel: { createModel = nil }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func destinationView(for route: ExhibitionRoute) -> some View {
+        switch route {
+        case .detail(let id):
+            let detailModel = exhibitionsModel.makeDetailModel(for: id)
+            ExhibitionDetailHost(
+                detailModel: detailModel,
+                onEdit: { path.append(.edit(id)) }
+            )
+        case .edit(let id):
+            ExhibitionEditWrapper(
+                exhibitionsModel: exhibitionsModel,
+                exhibitionID: id,
+                onCompleted: { _ in path.removeLast() },
+                onCancel: { path.removeLast() }
+            )
+        }
+    }
+}
+
+private struct ExhibitionDetailHost: View {
+    @Bindable var detailModel: ExhibitionDetailFeatureModel
+    let onEdit: () -> Void
+
+    var body: some View {
+        ExhibitionDetailView(store: detailModel, onEdit: onEdit)
+    }
+}
+
+private struct ExhibitionEditWrapper: View {
+    let exhibitionsModel: ExhibitionsFeatureModel
+    let exhibitionID: Int64
+    let onCompleted: (ExhibitionResponse) -> Void
+    let onCancel: () -> Void
+
+    @State private var editorModel: ExhibitionEditorFeatureModel?
+    @State private var loadingError: String?
+
+    var body: some View {
+        Group {
+            if let editorModel {
+                ExhibitionEditorView(
+                    store: editorModel,
+                    onCompleted: { exhibition in
+                        exhibitionsModel.replaceExhibition(exhibition)
+                        onCompleted(exhibition)
+                    },
+                    onCancel: onCancel
+                )
+            } else if let loadingError {
+                VStack(spacing: 14) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(AppTheme.rejectedText)
+                    Text(loadingError)
+                        .font(.system(size: 14))
+                        .foregroundStyle(AppTheme.mutedInk)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(40)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(AppTheme.canvas)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task {
+            let detail = exhibitionsModel.makeDetailModel(for: exhibitionID)
+            await detail.load()
+            if let model = detail.makeEditorModel() {
+                self.editorModel = model
+            } else {
+                self.loadingError = detail.errorMessage ?? "Could not load exhibition."
+            }
+        }
     }
 }
 

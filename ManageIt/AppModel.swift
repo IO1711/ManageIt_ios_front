@@ -17,6 +17,7 @@ final class AppModel {
     var pairingModel: PairingFeatureModel
     var sessionModel: DeviceSessionModel
     var inventoryModel: InventoryFeatureModel?
+    var exhibitionsModel: ExhibitionsFeatureModel?
 
     @ObservationIgnored
     private let preferences: AppPreferences
@@ -100,6 +101,7 @@ final class AppModel {
             let session = try await sessionModel.restore(storedContext: storedContext)
             updatePersistedContext(from: session)
             inventoryModel = makeInventoryModel(for: session.context)
+            exhibitionsModel = makeExhibitionsModel(for: session.context)
             appPhase = .active
         } catch {
             appPhase = .sessionRecovery
@@ -136,6 +138,7 @@ final class AppModel {
         )
         sessionModel.adopt(activeSession: session)
         inventoryModel = makeInventoryModel(for: context)
+        exhibitionsModel = makeExhibitionsModel(for: context)
         appPhase = .active
     }
 
@@ -152,6 +155,7 @@ final class AppModel {
     func handleSessionInvalidation(clearLocalPairing: Bool) {
         sessionModel.clear()
         inventoryModel = nil
+        exhibitionsModel = nil
         if clearLocalPairing {
             clearAllLocalPairing()
         } else {
@@ -171,6 +175,7 @@ final class AppModel {
         preferences.clearDeviceContext()
         sessionModel.clear()
         inventoryModel = nil
+        exhibitionsModel = nil
         pairedDevice = nil
         pairingModel.reset(keepServerAddress: true)
         appPhase = .pairing
@@ -213,6 +218,21 @@ final class AppModel {
     private func updatePersistedContext(from session: ActiveDeviceSession) {
         pairedDevice = session.context
         preferences.saveDeviceContext(session.context)
+    }
+
+    private func makeExhibitionsModel(for context: StoredDeviceContext) -> ExhibitionsFeatureModel {
+        ExhibitionsFeatureModel(
+            storedContext: context,
+            sessionModel: sessionModel,
+            apiClient: apiClient,
+            onContextUpdated: { [weak self] updated in
+                self?.pairedDevice = updated
+                self?.preferences.saveDeviceContext(updated)
+            },
+            onSessionInvalidated: { [weak self] in
+                self?.handleSessionInvalidation(clearLocalPairing: false)
+            }
+        )
     }
 
     private func makeInventoryModel(for context: StoredDeviceContext) -> InventoryFeatureModel {

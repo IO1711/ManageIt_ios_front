@@ -285,6 +285,20 @@ struct HistoryRow: View {
                         .font(.system(size: 11))
                         .foregroundStyle(AppTheme.plannedText)
                 }
+
+                if let actor = entry.movedByDevice {
+                    HStack(spacing: 4) {
+                        Image(systemName: actor.deviceIconName)
+                            .font(.system(size: 10))
+                        Text("Moved by \(actor.friendlyName)")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundStyle(AppTheme.subtleInk)
+                } else {
+                    Text("Moved by host admin")
+                        .font(.system(size: 11))
+                        .foregroundStyle(AppTheme.subtleInk)
+                }
             }
         }
         .padding(.vertical, 8)

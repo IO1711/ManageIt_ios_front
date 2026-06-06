@@ -355,6 +355,71 @@ struct ManageItAPIClient {
         )
     }
 
+    // MARK: - Exhibitions
+
+    func fetchExhibitions(
+        serverURL: URL,
+        accessToken: String,
+        phase: ExhibitionPhase? = nil
+    ) async throws -> [ExhibitionResponse] {
+        var items: [URLQueryItem] = []
+        if let phase {
+            items.append(URLQueryItem(name: "phase", value: phase.rawValue))
+        }
+        let response: ExhibitionListResponse = try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions",
+            method: "GET",
+            accessToken: accessToken,
+            queryItems: items,
+            body: Optional<String>.none
+        )
+        return response.exhibitions
+    }
+
+    func fetchExhibition(
+        serverURL: URL,
+        accessToken: String,
+        id: Int64
+    ) async throws -> ExhibitionResponse {
+        try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions/\(id)",
+            method: "GET",
+            accessToken: accessToken,
+            body: Optional<String>.none
+        )
+    }
+
+    func createExhibition(
+        serverURL: URL,
+        accessToken: String,
+        request: ExhibitionCreateRequest
+    ) async throws -> ExhibitionResponse {
+        try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions",
+            method: "POST",
+            accessToken: accessToken,
+            body: request
+        )
+    }
+
+    func updateExhibition(
+        serverURL: URL,
+        accessToken: String,
+        id: Int64,
+        request: ExhibitionUpdateRequest
+    ) async throws -> ExhibitionResponse {
+        try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions/\(id)",
+            method: "PUT",
+            accessToken: accessToken,
+            body: request
+        )
+    }
+
     // MARK: - Movement & History (response DTO is blocked in Part III)
 
     func createMovement(

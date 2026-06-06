@@ -54,11 +54,13 @@ final class DemoDataStore: @unchecked Sendable {
     private var authors: [DemoAuthor]
     private var organizations: [DemoOrg]
     private var history: [Int64: [DemoHistory]]
+    private var exhibitions: [DemoExhibition]
     private var nextItemId: Int64
     private var nextLocationId: Int64
     private var nextAuthorId: Int64
     private var nextOrgId: Int64
     private var nextHistoryId: Int64
+    private var nextExhibitionId: Int64
 
     init() {
         let seed = DemoSeed.build()
@@ -67,11 +69,13 @@ final class DemoDataStore: @unchecked Sendable {
         authors = seed.authors
         organizations = seed.organizations
         history = seed.history
+        exhibitions = seed.exhibitions
         nextItemId = (seed.items.map(\.id).max() ?? 0) + 1
         nextLocationId = (seed.locations.map(\.id).max() ?? 0) + 1
         nextAuthorId = (seed.authors.map(\.id).max() ?? 0) + 1
         nextOrgId = (seed.organizations.map(\.id).max() ?? 0) + 1
         nextHistoryId = (seed.history.values.flatMap { $0 }.map(\.id).max() ?? 0) + 1
+        nextExhibitionId = (seed.exhibitions.map(\.id).max() ?? 0) + 1
     }
 
     func respond(to request: URLRequest) -> (Int, Data?) {
@@ -142,8 +146,32 @@ final class DemoDataStore: @unchecked Sendable {
             }
             return (400, nil)
         }
+        if method == "GET" && path == "/api/exhibitions" {
+            return success(exhibitionsListJSON())
+        }
+        if method == "POST" && path == "/api/exhibitions" {
+            switch createExhibition(bodyData: bodyData) {
+            case .success(let ex):
+                return success(dictData(exhibitionDict(ex, includeItems: true)))
+            case .failure(let body):
+                return (400, body)
+            }
+        }
 
         // Path-suffix routes
+        if let id = extractTrailingId(path: path, prefix: "/api/exhibitions/", suffix: nil) {
+            if method == "GET", let ex = exhibitions.first(where: { $0.id == id }) {
+                return success(dictData(exhibitionDict(ex, includeItems: true)))
+            }
+            if method == "PUT" {
+                switch updateExhibition(id: id, bodyData: bodyData) {
+                case .success(let ex):
+                    return success(dictData(exhibitionDict(ex, includeItems: true)))
+                case .failure(let body):
+                    return (400, body)
+                }
+            }
+        }
         if let id = extractTrailingId(path: path, prefix: "/api/items/", suffix: "/history"), method == "GET" {
             return success(historyJSON(itemId: id))
         }
@@ -192,6 +220,10 @@ final class DemoDataStore: @unchecked Sendable {
     }
 
     // MARK: - Helpers shared across mutators
+
+    private let demoDeviceId = "11111111-1111-1111-1111-111111111111"
+    private let demoDeviceName = "Demo iPhone"
+    private let demoDeviceType = "IOS_APP"
 
     private func locationIsLeaf(_ id: Int64) -> Bool {
         !locations.contains { $0.parentLocationId == id }
@@ -286,7 +318,10 @@ final class DemoDataStore: @unchecked Sendable {
                 organizationId: nil,
                 moveInDate: moveIn,
                 moveOutDate: nil,
-                expectedReturnDate: nil
+                expectedReturnDate: nil,
+                movedByDeviceId: demoDeviceId,
+                movedByDeviceName: demoDeviceName,
+                movedByDeviceType: demoDeviceType
             )
             nextHistoryId += 1
             history[item.id, default: []].append(entry)
@@ -373,7 +408,10 @@ final class DemoDataStore: @unchecked Sendable {
                 organizationId: nil,
                 moveInDate: moveInDate,
                 moveOutDate: nil,
-                expectedReturnDate: nil
+                expectedReturnDate: nil,
+                movedByDeviceId: demoDeviceId,
+                movedByDeviceName: demoDeviceName,
+                movedByDeviceType: demoDeviceType
             ))
             nextHistoryId += 1
         } else {
@@ -396,7 +434,10 @@ final class DemoDataStore: @unchecked Sendable {
                 organizationId: resolved,
                 moveInDate: moveInDate,
                 moveOutDate: nil,
-                expectedReturnDate: json["expectedReturnDate"] as? String
+                expectedReturnDate: json["expectedReturnDate"] as? String,
+                movedByDeviceId: demoDeviceId,
+                movedByDeviceName: demoDeviceName,
+                movedByDeviceType: demoDeviceType
             ))
             nextHistoryId += 1
         }
@@ -441,6 +482,195 @@ final class DemoDataStore: @unchecked Sendable {
         guard let idx = locations.firstIndex(where: { $0.id == id }) else { return nil }
         locations[idx].archived = true
         return locations[idx]
+    }
+
+    // MARK: - Exhibitions
+
+    private func currentBusinessDateString() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.timeZone = .current
+        return formatter.string(from: Date())
+    }
+
+    private func phaseFor(start: String, end: String) -> String {
+        let today = currentBusinessDateString()
+        if today < start { return "PLANNED" }
+        if today > end { return "ENDED" }
+        return "ACTIVE"
+    }
+
+    private func dateRangesOverlap(aStart: String, aEnd: String, bStart: String, bEnd: String) -> Bool {
+        !(aEnd < bStart || bEnd < aStart)
+    }
+
+    private func createExhibition(bodyData: Data?) -> MutationResult<DemoExhibition> {
+        guard let data = bodyData,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Invalid payload")) }
+
+        guard let name = json["name"] as? String, !name.isEmpty else {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "name required"))
+        }
+        guard let locationId = (json["locationId"] as? Int).map(Int64.init) ?? (json["locationId"] as? Int64),
+              let location = locations.first(where: { $0.id == locationId }),
+              !location.archived else {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Unknown location"))
+        }
+        guard locationIsLeaf(locationId) else {
+            return .failure(errorEnvelope(code: "NON_LEAF_LOCATION", message: "Exhibition location must be a leaf"))
+        }
+        guard let startDate = json["startDate"] as? String,
+              let endDate = json["endDate"] as? String,
+              startDate <= endDate else {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Start date must be on or before end date"))
+        }
+        let itemIds: [Int64] = (json["itemIds"] as? [Any] ?? []).compactMap {
+            ($0 as? Int).map(Int64.init) ?? ($0 as? Int64)
+        }
+        // overlap check
+        for iid in itemIds {
+            for other in exhibitions where other.itemIds.contains(iid) {
+                if dateRangesOverlap(aStart: startDate, aEnd: endDate, bStart: other.startDate, bEnd: other.endDate) {
+                    return .failure(overlapEnvelope(itemId: iid, conflicting: other))
+                }
+            }
+        }
+        // active check: if today is within range, all items must currently be at the location
+        let phase = phaseFor(start: startDate, end: endDate)
+        if phase == "ACTIVE" {
+            for iid in itemIds {
+                if let item = items.first(where: { $0.id == iid }) {
+                    if item.presenceType != "INTERNAL" || item.locationId != locationId {
+                        return .failure(errorEnvelope(
+                            code: "ITEM_NOT_AT_EXHIBITION_LOCATION",
+                            message: "Item \(iid) is not currently at the exhibition location"
+                        ))
+                    }
+                }
+            }
+        }
+        let exhibition = DemoExhibition(
+            id: nextExhibitionId,
+            name: name,
+            locationId: locationId,
+            startDate: startDate,
+            endDate: endDate,
+            itemIds: itemIds
+        )
+        nextExhibitionId += 1
+        exhibitions.append(exhibition)
+        return .success(exhibition)
+    }
+
+    private func updateExhibition(id: Int64, bodyData: Data?) -> MutationResult<DemoExhibition> {
+        guard let idx = exhibitions.firstIndex(where: { $0.id == id }) else {
+            return .failure(errorEnvelope(code: "NOT_FOUND", message: "Exhibition not found"))
+        }
+        guard let data = bodyData,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Invalid payload")) }
+
+        guard let name = json["name"] as? String, !name.isEmpty else {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "name required"))
+        }
+        guard let locationId = (json["locationId"] as? Int).map(Int64.init) ?? (json["locationId"] as? Int64),
+              let location = locations.first(where: { $0.id == locationId }),
+              !location.archived else {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Unknown location"))
+        }
+        guard locationIsLeaf(locationId) else {
+            return .failure(errorEnvelope(code: "NON_LEAF_LOCATION", message: "Exhibition location must be a leaf"))
+        }
+        guard let startDate = json["startDate"] as? String,
+              let endDate = json["endDate"] as? String,
+              startDate <= endDate else {
+            return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Start date must be on or before end date"))
+        }
+        let itemIds: [Int64] = (json["itemIds"] as? [Any] ?? []).compactMap {
+            ($0 as? Int).map(Int64.init) ?? ($0 as? Int64)
+        }
+        // overlap check vs others
+        for iid in itemIds {
+            for other in exhibitions where other.id != id && other.itemIds.contains(iid) {
+                if dateRangesOverlap(aStart: startDate, aEnd: endDate, bStart: other.startDate, bEnd: other.endDate) {
+                    return .failure(overlapEnvelope(itemId: iid, conflicting: other))
+                }
+            }
+        }
+
+        exhibitions[idx] = DemoExhibition(
+            id: id,
+            name: name,
+            locationId: locationId,
+            startDate: startDate,
+            endDate: endDate,
+            itemIds: itemIds
+        )
+        return .success(exhibitions[idx])
+    }
+
+    private func overlapEnvelope(itemId: Int64, conflicting: DemoExhibition) -> Data {
+        let envelope: [String: Any] = [
+            "error": [
+                "code": "ITEM_EXHIBITION_OVERLAP",
+                "message": "One or more items already belong to another exhibition in an overlapping period",
+                "details": [
+                    "itemIds": [itemId],
+                    "conflictingExhibitions": [[
+                        "id": conflicting.id,
+                        "name": conflicting.name,
+                        "startDate": conflicting.startDate,
+                        "endDate": conflicting.endDate
+                    ]]
+                ]
+            ]
+        ]
+        return dictData(envelope)
+    }
+
+    private func exhibitionDict(_ ex: DemoExhibition, includeItems: Bool) -> [String: Any] {
+        var dict: [String: Any] = [
+            "id": ex.id,
+            "name": ex.name,
+            "locationId": ex.locationId,
+            "locationPath": locationPath(ex.locationId),
+            "startDate": ex.startDate,
+            "endDate": ex.endDate,
+            "phase": phaseFor(start: ex.startDate, end: ex.endDate),
+            "itemCount": ex.itemIds.count
+        ]
+        if includeItems {
+            let items: [[String: Any]] = ex.itemIds.compactMap { iid in
+                guard let item = self.items.first(where: { $0.id == iid }) else { return nil }
+                var placement: [String: Any] = [
+                    "presenceType": item.presenceType,
+                    "location": NSNull(),
+                    "organization": NSNull()
+                ]
+                if let lid = item.locationId, let loc = locations.first(where: { $0.id == lid }) {
+                    placement["location"] = ["id": loc.id, "name": loc.name, "path": locationPath(lid)]
+                }
+                if let oid = item.organizationId, let org = organizations.first(where: { $0.id == oid }) {
+                    placement["organization"] = ["id": org.id, "name": org.name]
+                }
+                return [
+                    "id": item.id,
+                    "mainInventoryNumber": item.mainInventoryNumber,
+                    "title": item.title,
+                    "archived": item.archived,
+                    "currentPlacement": placement
+                ]
+            }
+            dict["items"] = items
+        }
+        return dict
+    }
+
+    private func exhibitionsListJSON() -> Data {
+        let payload = exhibitions.map { exhibitionDict($0, includeItems: false) }
+        return dictData(["exhibitions": payload])
     }
 
     // MARK: - Author / Org create
@@ -570,7 +800,14 @@ final class DemoDataStore: @unchecked Sendable {
                 "location": NSNull(),
                 "organization": NSNull(),
                 "moveOutDate": row.moveOutDate as Any? ?? NSNull(),
-                "expectedReturnDate": row.expectedReturnDate as Any? ?? NSNull()
+                "expectedReturnDate": row.expectedReturnDate as Any? ?? NSNull(),
+                "movedByDevice": row.movedByDeviceName.map { name in
+                    [
+                        "id": row.movedByDeviceId ?? "11111111-1111-1111-1111-111111111111",
+                        "friendlyName": name,
+                        "deviceType": row.movedByDeviceType ?? "IOS_APP"
+                    ] as [String: Any]
+                } ?? NSNull()
             ]
             if let lid = row.locationId, let loc = locations.first(where: { $0.id == lid }) {
                 dict["location"] = ["id": loc.id, "name": loc.name, "path": locationPath(lid)]
@@ -752,6 +989,18 @@ private struct DemoHistory {
     var moveInDate: String
     var moveOutDate: String?
     var expectedReturnDate: String?
+    var movedByDeviceId: String?
+    var movedByDeviceName: String?
+    var movedByDeviceType: String?
+}
+
+private struct DemoExhibition {
+    var id: Int64
+    var name: String
+    var locationId: Int64
+    var startDate: String
+    var endDate: String
+    var itemIds: [Int64]
 }
 
 private enum DemoSeed {
@@ -760,7 +1009,8 @@ private enum DemoSeed {
         locations: [DemoLocation],
         authors: [DemoAuthor],
         organizations: [DemoOrg],
-        history: [Int64: [DemoHistory]]
+        history: [Int64: [DemoHistory]],
+        exhibitions: [DemoExhibition]
     ) {
         // Tree:
         //   Hall A
@@ -902,29 +1152,55 @@ private enum DemoSeed {
                 archived: true
             ),
         ]
+        let demoIPhoneId = "11111111-1111-1111-1111-111111111111"
+        let frontDeskBrowserId = "22222222-2222-2222-2222-222222222222"
+
         let history: [Int64: [DemoHistory]] = [
             1: [
-                DemoHistory(id: 1, presenceType: "INTERNAL", locationId: 4, organizationId: nil, moveInDate: "2024-05-15", moveOutDate: nil, expectedReturnDate: nil)
+                DemoHistory(id: 1, presenceType: "INTERNAL", locationId: 4, organizationId: nil, moveInDate: "2024-05-15", moveOutDate: nil, expectedReturnDate: nil,
+                            movedByDeviceId: frontDeskBrowserId, movedByDeviceName: "Front Desk Chrome", movedByDeviceType: "WEB_BROWSER")
             ],
             2: [
-                DemoHistory(id: 2, presenceType: "INTERNAL", locationId: 10, organizationId: nil, moveInDate: "2023-09-01", moveOutDate: "2026-04-10", expectedReturnDate: nil),
-                DemoHistory(id: 3, presenceType: "EXTERNAL", locationId: nil, organizationId: 1, moveInDate: "2026-04-10", moveOutDate: nil, expectedReturnDate: "2026-08-10"),
+                DemoHistory(id: 2, presenceType: "INTERNAL", locationId: 10, organizationId: nil, moveInDate: "2023-09-01", moveOutDate: "2026-04-10", expectedReturnDate: nil,
+                            movedByDeviceId: frontDeskBrowserId, movedByDeviceName: "Front Desk Chrome", movedByDeviceType: "WEB_BROWSER"),
+                DemoHistory(id: 3, presenceType: "EXTERNAL", locationId: nil, organizationId: 1, moveInDate: "2026-04-10", moveOutDate: nil, expectedReturnDate: "2026-08-10",
+                            movedByDeviceId: demoIPhoneId, movedByDeviceName: "Demo iPhone", movedByDeviceType: "IOS_APP"),
             ],
             3: [
-                DemoHistory(id: 4, presenceType: "INTERNAL", locationId: 5, organizationId: nil, moveInDate: "2025-06-01", moveOutDate: "2025-12-01", expectedReturnDate: nil),
-                DemoHistory(id: 5, presenceType: "INTERNAL", locationId: 8, organizationId: nil, moveInDate: "2025-12-01", moveOutDate: nil, expectedReturnDate: nil),
+                DemoHistory(id: 4, presenceType: "INTERNAL", locationId: 5, organizationId: nil, moveInDate: "2025-06-01", moveOutDate: "2025-12-01", expectedReturnDate: nil,
+                            movedByDeviceId: nil, movedByDeviceName: nil, movedByDeviceType: nil),
+                DemoHistory(id: 5, presenceType: "INTERNAL", locationId: 8, organizationId: nil, moveInDate: "2025-12-01", moveOutDate: nil, expectedReturnDate: nil,
+                            movedByDeviceId: demoIPhoneId, movedByDeviceName: "Demo iPhone", movedByDeviceType: "IOS_APP"),
             ],
             4: [
-                DemoHistory(id: 6, presenceType: "INTERNAL", locationId: 11, organizationId: nil, moveInDate: "2024-02-12", moveOutDate: nil, expectedReturnDate: nil)
+                DemoHistory(id: 6, presenceType: "INTERNAL", locationId: 11, organizationId: nil, moveInDate: "2024-02-12", moveOutDate: nil, expectedReturnDate: nil,
+                            movedByDeviceId: frontDeskBrowserId, movedByDeviceName: "Front Desk Chrome", movedByDeviceType: "WEB_BROWSER")
             ],
             5: [
-                DemoHistory(id: 7, presenceType: "INTERNAL", locationId: 10, organizationId: nil, moveInDate: "2025-01-20", moveOutDate: nil, expectedReturnDate: nil)
+                DemoHistory(id: 7, presenceType: "INTERNAL", locationId: 10, organizationId: nil, moveInDate: "2025-01-20", moveOutDate: nil, expectedReturnDate: nil,
+                            movedByDeviceId: demoIPhoneId, movedByDeviceName: "Demo iPhone", movedByDeviceType: "IOS_APP")
             ],
             6: [
-                DemoHistory(id: 8, presenceType: "INTERNAL", locationId: 7, organizationId: nil, moveInDate: "2025-11-05", moveOutDate: nil, expectedReturnDate: nil)
+                DemoHistory(id: 8, presenceType: "INTERNAL", locationId: 7, organizationId: nil, moveInDate: "2025-11-05", moveOutDate: nil, expectedReturnDate: nil,
+                            movedByDeviceId: demoIPhoneId, movedByDeviceName: "Demo iPhone", movedByDeviceType: "IOS_APP")
             ],
         ]
-        return (items, locations, authors, orgs, history)
+
+        // Seed exhibitions: one active, one planned, one ended.
+        // Item 3 sits at Shelf 1 (loc 8). Item 6 sits at Display Case 2 (loc 7).
+        let exhibitions: [DemoExhibition] = [
+            // Active: today is between these dates relative to BusinessDate.today (2026-05-27 approx)
+            DemoExhibition(id: 1, name: "Masks & Mythology",  locationId: 8,
+                           startDate: "2026-05-01", endDate: "2026-07-30", itemIds: [3]),
+            // Planned: future
+            DemoExhibition(id: 2, name: "Autumn Cubism",      locationId: 7,
+                           startDate: "2026-09-12", endDate: "2026-10-20", itemIds: [6]),
+            // Ended: past
+            DemoExhibition(id: 3, name: "Winter Landscapes",  locationId: 4,
+                           startDate: "2025-12-01", endDate: "2026-02-15", itemIds: [1]),
+        ]
+
+        return (items, locations, authors, orgs, history, exhibitions)
     }
 }
 

@@ -49,6 +49,7 @@ struct ItemHistoryEntry: Identifiable, Equatable {
     let moveInDate: BusinessDate
     let expectedReturnDate: BusinessDate?
     let moveOutDate: BusinessDate?
+    let movedByDevice: MovedByDevice?
 
     var isOpen: Bool { moveOutDate == nil }
 
@@ -88,6 +89,7 @@ extension ItemHistoryEntry: Decodable {
         case moveInDate
         case expectedReturnDate
         case moveOutDate
+        case movedByDevice
     }
 
     init(from decoder: Decoder) throws {
@@ -99,5 +101,6 @@ extension ItemHistoryEntry: Decodable {
         self.moveInDate = try c.decode(BusinessDate.self, forKey: .moveInDate)
         self.expectedReturnDate = try c.decodeIfPresent(BusinessDate.self, forKey: .expectedReturnDate)
         self.moveOutDate = try c.decodeIfPresent(BusinessDate.self, forKey: .moveOutDate)
+        self.movedByDevice = try c.decodeIfPresent(MovedByDevice.self, forKey: .movedByDevice)
     }
 }
