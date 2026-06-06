@@ -11,7 +11,7 @@ final class DemoAPIProtocol: URLProtocol {
     /// the offline-sync coordinator can exercise its queue/replay path against
     /// the demo backend. Toggled from Account → Debug section.
     nonisolated(unsafe) static var simulateOffline = false
-    nonisolated(unsafe) static let store = DemoDataStore()
+    static let store = DemoDataStore()
 
     static let demoHost = "demo.manageit.local"
     static let demoServerAddress = "http://demo.manageit.local"
@@ -777,7 +777,12 @@ final class DemoDataStore: @unchecked Sendable {
 
     private func conflictJSON(url: URL) -> Data {
         let number = url.queryValue("mainInventoryNumber") ?? ""
-        let conflict = items.first(where: { $0.mainInventoryNumber.lowercased() == number.lowercased() && !$0.archived })
+        let includeArchived = url.queryValue("includeArchived") == "true"
+        // Archived items keep their main inventory number reserved per architecture.
+        let conflict = items.first(where: { item in
+            item.mainInventoryNumber.lowercased() == number.lowercased()
+            && (includeArchived || !item.archived)
+        })
         var body: [String: Any] = [
             "available": conflict == nil,
             "mainInventoryNumber": number,
@@ -903,6 +908,19 @@ final class DemoDataStore: @unchecked Sendable {
             guard let a = authors.first(where: { $0.id == aid }) else { return nil }
             return ["id": a.id, "name": a.name]
         }
+        // Surface active exhibition membership per architecture rule 12.3.
+        var current: Any = NSNull()
+        if let active = exhibitions.first(where: {
+            $0.itemIds.contains(item.id)
+            && phaseFor(start: $0.startDate, end: $0.endDate) == "ACTIVE"
+        }) {
+            current = [
+                "id": active.id,
+                "name": active.name,
+                "startDate": active.startDate,
+                "endDate": active.endDate
+            ] as [String: Any]
+        }
         return [
             "id": item.id,
             "mainInventoryNumber": item.mainInventoryNumber,
@@ -911,7 +929,8 @@ final class DemoDataStore: @unchecked Sendable {
             "authors": authorsArr,
             "currentPlacement": placement,
             "planning": planning,
-            "archived": item.archived
+            "archived": item.archived,
+            "currentExhibition": current
         ]
     }
 

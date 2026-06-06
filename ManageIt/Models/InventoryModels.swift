@@ -44,6 +44,15 @@ struct ItemPlanning: Codable, Equatable {
     let expectedLeaveDate: BusinessDate?
 }
 
+/// Slim summary of the exhibition an item is currently in, surfaced on item
+/// detail per architecture section 12.3.
+struct CurrentExhibitionSummary: Codable, Equatable, Identifiable, Hashable {
+    let id: Int64
+    let name: String
+    let startDate: BusinessDate
+    let endDate: BusinessDate
+}
+
 struct ItemResponse: Codable, Equatable, Identifiable {
     let id: Int64
     let mainInventoryNumber: String
@@ -53,10 +62,53 @@ struct ItemResponse: Codable, Equatable, Identifiable {
     let currentPlacement: ItemPlacement
     let planning: ItemPlanning
     let archived: Bool
+    /// Active exhibition the item is currently part of, or `nil` when not in
+    /// any active exhibition. Optional so older backend responses still decode.
+    let currentExhibition: CurrentExhibitionSummary?
 
     var authorNames: String {
         if authors.isEmpty { return "—" }
         return authors.map(\.name).joined(separator: ", ")
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, mainInventoryNumber, title, secondaryInventoryNumbers
+        case authors, currentPlacement, planning, archived, currentExhibition
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(Int64.self, forKey: .id)
+        self.mainInventoryNumber = try c.decode(String.self, forKey: .mainInventoryNumber)
+        self.title = try c.decode(String.self, forKey: .title)
+        self.secondaryInventoryNumbers = try c.decode([String].self, forKey: .secondaryInventoryNumbers)
+        self.authors = try c.decode([ItemAuthorSummary].self, forKey: .authors)
+        self.currentPlacement = try c.decode(ItemPlacement.self, forKey: .currentPlacement)
+        self.planning = try c.decode(ItemPlanning.self, forKey: .planning)
+        self.archived = try c.decode(Bool.self, forKey: .archived)
+        self.currentExhibition = try c.decodeIfPresent(CurrentExhibitionSummary.self, forKey: .currentExhibition)
+    }
+
+    init(
+        id: Int64,
+        mainInventoryNumber: String,
+        title: String,
+        secondaryInventoryNumbers: [String],
+        authors: [ItemAuthorSummary],
+        currentPlacement: ItemPlacement,
+        planning: ItemPlanning,
+        archived: Bool,
+        currentExhibition: CurrentExhibitionSummary? = nil
+    ) {
+        self.id = id
+        self.mainInventoryNumber = mainInventoryNumber
+        self.title = title
+        self.secondaryInventoryNumbers = secondaryInventoryNumbers
+        self.authors = authors
+        self.currentPlacement = currentPlacement
+        self.planning = planning
+        self.archived = archived
+        self.currentExhibition = currentExhibition
     }
 }
 

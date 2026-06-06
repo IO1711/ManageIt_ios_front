@@ -113,7 +113,12 @@ final class AppModel {
             exhibitionsModel = makeExhibitionsModel(for: session.context)
             appPhase = .active
             await reminderCoordinator.requestPermissionIfNeeded()
-            await offlineSyncCoordinator.replay()
+            let summary = await offlineSyncCoordinator.replay()
+            // Per ios.md §10.3.1: after replay, refresh affected item data from
+            // the server so any drift from optimistic state is reconciled.
+            if summary.succeeded > 0 {
+                await inventoryModel?.reload()
+            }
         } catch {
             appPhase = .sessionRecovery
         }
@@ -152,9 +157,11 @@ final class AppModel {
         inventoryModel = makeInventoryModel(for: context)
         exhibitionsModel = makeExhibitionsModel(for: context)
         appPhase = .active
-        Task {
-            await reminderCoordinator.requestPermissionIfNeeded()
-            await offlineSyncCoordinator.replay()
+        Task { [weak self] in
+            await self?.reminderCoordinator.requestPermissionIfNeeded()
+            if let summary = await self?.offlineSyncCoordinator.replay(), summary.succeeded > 0 {
+                await self?.inventoryModel?.reload()
+            }
         }
     }
 

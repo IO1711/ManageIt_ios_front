@@ -126,30 +126,42 @@ struct ExhibitionEditorView: View {
             if !store.selectedItems.isEmpty {
                 VStack(spacing: 6) {
                     ForEach(store.selectedItems) { item in
-                        HStack(spacing: 10) {
-                            Image(systemName: "square.stack.fill")
-                                .foregroundStyle(AppTheme.primary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.title)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(AppTheme.ink)
-                                Text(item.mainInventoryNumber)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(AppTheme.mutedInk)
+                        let warning = store.itemPlacementWarning(item)
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "square.stack.fill")
+                                    .foregroundStyle(warning == nil ? AppTheme.primary : AppTheme.rejectedText)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.title)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(AppTheme.ink)
+                                    Text(item.mainInventoryNumber)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(AppTheme.mutedInk)
+                                }
+                                Spacer()
+                                Button {
+                                    store.removeItem(id: item.id)
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundStyle(AppTheme.rejectedText)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            Spacer()
-                            Button {
-                                store.removeItem(id: item.id)
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .foregroundStyle(AppTheme.rejectedText)
+                            if let warning {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 10))
+                                    Text(warning)
+                                        .font(.system(size: 11))
+                                }
+                                .foregroundStyle(AppTheme.rejectedText)
                             }
-                            .buttonStyle(.plain)
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                         .background(
-                            RoundedRectangle(cornerRadius: 10).fill(AppTheme.canvas)
+                            RoundedRectangle(cornerRadius: 10).fill(warning == nil ? AppTheme.canvas : AppTheme.rejectedBg)
                         )
                     }
                 }

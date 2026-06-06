@@ -71,7 +71,7 @@ struct MovementEntryView: View {
         VStack(alignment: .leading, spacing: 12) {
             sectionHeader("Choose movement type")
 
-            ForEach([MovementEntryMode.internalMove, .externalRental, .returnToInternal], id: \.displayTitle) { mode in
+            ForEach(store.allowedModes, id: \.displayTitle) { mode in
                 Button {
                     store.setMode(mode)
                 } label: {
@@ -95,6 +95,12 @@ struct MovementEntryView: View {
                     )
                 }
                 .buttonStyle(.plain)
+            }
+
+            if store.item.currentPlacement.presenceType == .external {
+                Text("This item is currently external — only an internal return is allowed until it comes back.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppTheme.mutedInk)
             }
         }
         .museumPanel()

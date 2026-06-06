@@ -95,6 +95,35 @@ final class ExhibitionEditorFeatureModel: Identifiable {
         return false
     }
 
+    /// True when the chosen date range covers today — in that case every linked
+    /// item must already sit at the exhibition leaf location per architecture
+    /// rules. Surfaces in the UI as a per-item warning and blocks submit.
+    var willBeActive: Bool {
+        guard let start = startDate, let end = endDate else { return false }
+        let today = BusinessDate.today
+        return start <= today && today <= end
+    }
+
+    func itemPlacementWarning(_ item: ExhibitionItemSummary) -> String? {
+        guard willBeActive, let locationId = selectedLocation?.id else { return nil }
+        guard let placement = item.currentPlacement else {
+            return "Current placement unknown — verify before saving."
+        }
+        if placement.presenceType != .internal {
+            return "Currently external — must be returned to \(selectedLocation?.displayPath ?? "exhibition location") before activating."
+        }
+        if placement.location?.id != locationId {
+            let target = selectedLocation?.displayPath ?? "exhibition location"
+            return "Currently at \(placement.displayTargetName) — move it to \(target) before activating."
+        }
+        return nil
+    }
+
+    var hasPlacementIssues: Bool {
+        guard willBeActive else { return false }
+        return selectedItems.contains(where: { itemPlacementWarning($0) != nil })
+    }
+
     func loadDependencies() async {
         isLoading = true
         defer { isLoading = false }
@@ -194,6 +223,10 @@ final class ExhibitionEditorFeatureModel: Identifiable {
         }
         if selectedItems.isEmpty {
             validationMessage = "Add at least one item to the exhibition."
+            return
+        }
+        if willBeActive && hasPlacementIssues {
+            validationMessage = "One or more items are not currently at the exhibition location. Move them first, then save."
             return
         }
 

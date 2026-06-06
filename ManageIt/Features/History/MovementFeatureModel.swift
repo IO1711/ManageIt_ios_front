@@ -77,6 +77,16 @@ final class MovementFeatureModel {
         offlineSyncCoordinator.isEligible(mode: mode, item: item)
     }
 
+    /// External items can only return; internal items can either move
+    /// internally or be sent out. Prevents architecturally invalid
+    /// external → external transitions in the UI.
+    var allowedModes: [MovementEntryMode] {
+        if item.currentPlacement.presenceType == .external {
+            return [.returnToInternal]
+        }
+        return [.internalMove, .externalRental]
+    }
+
     func loadDependencies() async {
         isLoading = true
         defer { isLoading = false }

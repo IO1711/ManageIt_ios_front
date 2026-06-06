@@ -1,5 +1,20 @@
 import Foundation
 
+// MARK: - App Transport Security note
+//
+// The architecture defers the exact ATS exception policy (see
+// must_read_for_ios/ios_front_technical_spec.md §14.12). Demo mode works
+// because `DemoAPIProtocol` intercepts requests before ATS evaluation, so
+// `http://demo.manageit.local` round-trips fine without an exception.
+//
+// To pair against a real LAN HTTP server on a physical iPhone, the host
+// project must add an `NSAppTransportSecurity` entry — typically
+// `NSAllowsLocalNetworking = true` for LAN-only deployments, or scoped
+// `NSExceptionDomains` per museum host. Switching this on requires turning
+// off `GENERATE_INFOPLIST_FILE` and providing a manual `Info.plist`. That
+// transition is intentionally left to the deployment team because it is
+// production-affecting and unrelated to the iOS feature scope.
+
 struct InventoryListQuery: Equatable {
     var searchText: String = ""
     var includeArchived: Bool = false
@@ -210,7 +225,12 @@ struct ManageItAPIClient {
             path: "/items/conflicts/main-number",
             method: "GET",
             accessToken: accessToken,
-            queryItems: [URLQueryItem(name: "mainInventoryNumber", value: mainInventoryNumber)],
+            queryItems: [
+                URLQueryItem(name: "mainInventoryNumber", value: mainInventoryNumber),
+                // Per architecture rule: archived items keep their main inventory
+                // number permanently reserved, so the pre-check must include them.
+                URLQueryItem(name: "includeArchived", value: "true")
+            ],
             body: Optional<String>.none
         )
     }

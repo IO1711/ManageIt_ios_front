@@ -109,6 +109,15 @@ struct ItemDetailView: View {
                     tint: AppTheme.primary
                 )
 
+                if let currentExhibition = item.currentExhibition {
+                    statusRow(
+                        icon: "rectangle.stack.fill",
+                        label: "Active in exhibition",
+                        value: "\(currentExhibition.name) (\(currentExhibition.startDate.formattedForDisplay()) → \(currentExhibition.endDate.formattedForDisplay()))",
+                        tint: AppTheme.approvedText
+                    )
+                }
+
                 if let promised = item.planning.promisedOrganization {
                     statusRow(
                         icon: "calendar.badge.plus",
