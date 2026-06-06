@@ -44,7 +44,7 @@ struct ItemPlanning: Codable, Equatable {
     let expectedLeaveDate: BusinessDate?
 }
 
-struct ItemResponse: Decodable, Equatable, Identifiable {
+struct ItemResponse: Codable, Equatable, Identifiable {
     let id: Int64
     let mainInventoryNumber: String
     let title: String
@@ -60,7 +60,7 @@ struct ItemResponse: Decodable, Equatable, Identifiable {
     }
 }
 
-struct ItemListResponse: Decodable, Equatable {
+struct ItemListResponse: Codable, Equatable {
     let items: [ItemResponse]
     let page: Int
     let size: Int
@@ -68,7 +68,7 @@ struct ItemListResponse: Decodable, Equatable {
     let totalPages: Int
 }
 
-struct ItemAuthorInput: Encodable, Equatable {
+struct ItemAuthorInput: Codable, Equatable {
     let id: Int64?
     let name: String?
 }

@@ -19,6 +19,7 @@ final class AppModel {
     var inventoryModel: InventoryFeatureModel?
     var exhibitionsModel: ExhibitionsFeatureModel?
     var reminderCoordinator: ReminderCoordinator
+    var offlineSyncCoordinator: OfflineSyncCoordinator
 
     @ObservationIgnored
     private let preferences: AppPreferences
@@ -51,6 +52,11 @@ final class AppModel {
         self.keychainStore = keychainStore
         self.apiClient = apiClient
         self.reminderCoordinator = ReminderCoordinator()
+        self.offlineSyncCoordinator = OfflineSyncCoordinator(
+            outbox: OfflineMovementOutbox(),
+            locationCache: OfflineLocationCache(),
+            apiClient: apiClient
+        )
 
         let storedContext = preferences.loadDeviceContext()
         self.pairedDevice = storedContext
@@ -102,10 +108,12 @@ final class AppModel {
         do {
             let session = try await sessionModel.restore(storedContext: storedContext)
             updatePersistedContext(from: session)
+            offlineSyncCoordinator.attachSession(sessionModel, context: session.context)
             inventoryModel = makeInventoryModel(for: session.context)
             exhibitionsModel = makeExhibitionsModel(for: session.context)
             appPhase = .active
             await reminderCoordinator.requestPermissionIfNeeded()
+            await offlineSyncCoordinator.replay()
         } catch {
             appPhase = .sessionRecovery
         }
@@ -140,10 +148,14 @@ final class AppModel {
             accessTokenExpiresAt: response.accessTokenExpiresAt
         )
         sessionModel.adopt(activeSession: session)
+        offlineSyncCoordinator.attachSession(sessionModel, context: context)
         inventoryModel = makeInventoryModel(for: context)
         exhibitionsModel = makeExhibitionsModel(for: context)
         appPhase = .active
-        Task { await reminderCoordinator.requestPermissionIfNeeded() }
+        Task {
+            await reminderCoordinator.requestPermissionIfNeeded()
+            await offlineSyncCoordinator.replay()
+        }
     }
 
     func applyRefreshedSession(_ session: ActiveDeviceSession) {
@@ -178,6 +190,8 @@ final class AppModel {
         keychainStore.clearAuthenticatedMaterial()
         preferences.clearDeviceContext()
         sessionModel.clear()
+        offlineSyncCoordinator.detachSession()
+        offlineSyncCoordinator.resetForLogout()
         inventoryModel = nil
         exhibitionsModel = nil
         pairedDevice = nil
@@ -247,6 +261,7 @@ final class AppModel {
             apiClient: apiClient,
             preferences: preferences,
             reminderCoordinator: reminderCoordinator,
+            offlineSyncCoordinator: offlineSyncCoordinator,
             onContextUpdated: { [weak self] updated in
                 self?.pairedDevice = updated
                 self?.preferences.saveDeviceContext(updated)

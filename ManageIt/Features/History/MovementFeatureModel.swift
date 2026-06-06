@@ -4,7 +4,8 @@ import Observation
 @MainActor
 @Observable
 final class MovementFeatureModel {
-    var itemID: Int64
+    let item: ItemResponse
+    var itemID: Int64 { item.id }
     var mode: MovementEntryMode
     var selectedLocation: LocationResponse?
     var availableLocations: [LocationResponse] = []
@@ -19,6 +20,9 @@ final class MovementFeatureModel {
     var validationMessage: String?
     var saveSucceeded: Bool = false
     var savedItem: ItemResponse?
+    /// True when the submit hit a network error and the move was queued
+    /// locally instead of going to the server.
+    var queuedOffline: Bool = false
 
     var storedContext: StoredDeviceContext
 
@@ -27,6 +31,9 @@ final class MovementFeatureModel {
 
     @ObservationIgnored
     private let apiClient: ManageItAPIClient
+
+    @ObservationIgnored
+    let offlineSyncCoordinator: OfflineSyncCoordinator
 
     @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
@@ -41,19 +48,20 @@ final class MovementFeatureModel {
     private var orgSearchTask: Task<Void, Never>?
 
     init(
-        itemID: Int64,
-        currentPresence: ItemPresenceType,
+        item: ItemResponse,
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
+        offlineSyncCoordinator: OfflineSyncCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void
     ) {
-        self.itemID = itemID
-        self.mode = currentPresence == .external ? .returnToInternal : .internalMove
+        self.item = item
+        self.mode = item.currentPlacement.presenceType == .external ? .returnToInternal : .internalMove
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
+        self.offlineSyncCoordinator = offlineSyncCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
         self.authenticated = AuthenticatedAPI(
@@ -65,6 +73,10 @@ final class MovementFeatureModel {
         )
     }
 
+    var isOfflineEligibleForCurrentMode: Bool {
+        offlineSyncCoordinator.isEligible(mode: mode, item: item)
+    }
+
     func loadDependencies() async {
         isLoading = true
         defer { isLoading = false }
@@ -73,6 +85,14 @@ final class MovementFeatureModel {
                 try await self.apiClient.fetchLocations(serverURL: url, accessToken: token, includeArchived: false)
             }
             self.availableLocations = locations
+            offlineSyncCoordinator.updateLocationCache(locations)
+        } catch let error as ManageItError {
+            if case .transportFailure = error, !offlineSyncCoordinator.cachedLocations.isEmpty {
+                // Fall back to cached hierarchy so user can still queue offline.
+                self.availableLocations = offlineSyncCoordinator.cachedLocations
+            } else {
+                errorMessage = AuthenticatedAPI.userFacing(error)
+            }
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
@@ -175,7 +195,8 @@ final class MovementFeatureModel {
             locationId: locationId,
             organization: organization,
             moveInDate: date,
-            expectedReturnDate: mode == .externalRental ? expectedReturnDate : nil
+            expectedReturnDate: mode == .externalRental ? expectedReturnDate : nil,
+            expectedSourcePlacement: nil
         )
 
         isSaving = true
@@ -187,6 +208,21 @@ final class MovementFeatureModel {
             }
             savedItem = updated
             saveSucceeded = true
+        } catch let error as ManageItError {
+            if case .transportFailure = error, isOfflineEligibleForCurrentMode {
+                switch offlineSyncCoordinator.queueMovement(item: item, mode: mode, request: request) {
+                case .success(let entry):
+                    savedItem = entry.optimisticItem
+                    saveSucceeded = true
+                    queuedOffline = true
+                case .alreadyQueued:
+                    errorMessage = "This item already has a queued offline movement. Sync or discard it before queuing another."
+                case .ineligibleExternal:
+                    errorMessage = "Send-to-external is only allowed offline when planning data is already synced."
+                }
+            } else {
+                errorMessage = AuthenticatedAPI.userFacing(error)
+            }
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }

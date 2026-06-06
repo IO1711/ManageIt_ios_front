@@ -17,6 +17,9 @@ struct ItemDetailView: View {
                         .padding(.top, 80)
                 } else if let item = store.item {
                     headerSection(item: item)
+                    if let queued = store.queuedOfflineEntry {
+                        offlineEntryBanner(entry: queued)
+                    }
                     metadataSection(item: item)
                     statusSection(item: item)
                     historySection
@@ -131,6 +134,42 @@ struct ItemDetailView: View {
             }
         }
         .museumPanel()
+    }
+
+    private func offlineEntryBanner(entry: OfflineMovementEntry) -> some View {
+        let isRejected = entry.status == .rejected
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: isRejected ? "exclamationmark.octagon.fill" : "tray.and.arrow.up.fill")
+                    .foregroundStyle(isRejected ? AppTheme.rejectedText : AppTheme.plannedText)
+                Text(isRejected ? "Sync rejected" : "Queued offline movement")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(isRejected ? AppTheme.rejectedText : AppTheme.ink)
+                Spacer()
+            }
+            Text(isRejected
+                ? "The server refused this replay (stale or invalid). Discard it and create a fresh move."
+                : "Pending sync since \(entry.queuedAt.formatted(date: .abbreviated, time: .shortened)). Optimistic placement shown above.")
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.mutedInk)
+            if let lastError = entry.lastError {
+                Text(lastError)
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppTheme.rejectedText)
+            }
+            HStack(spacing: 8) {
+                Button(role: .destructive) {
+                    store.discardQueuedEntry()
+                } label: {
+                    Label("Discard", systemImage: "trash")
+                }
+                .buttonStyle(DestructiveButtonStyle())
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12).fill(isRejected ? AppTheme.rejectedBg : AppTheme.plannedBg)
+        )
     }
 
     private func rentalReminderChip(date: Date) -> some View {
@@ -272,10 +311,13 @@ struct ItemDetailView: View {
 struct HistoryRow: View {
     let entry: ItemHistoryEntry
 
+    /// Synthetic entries inserted by the offline coordinator carry a negative id.
+    private var isPendingSync: Bool { entry.id < 0 }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: entry.presenceType == .external ? "paperplane.fill" : "mappin.and.ellipse")
-                .foregroundStyle(AppTheme.primary)
+                .foregroundStyle(isPendingSync ? AppTheme.plannedText : AppTheme.primary)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -283,7 +325,9 @@ struct HistoryRow: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(AppTheme.ink)
                     Spacer()
-                    if entry.isOpen {
+                    if isPendingSync {
+                        StatusTag(text: "Pending sync", kind: .planned)
+                    } else if entry.isOpen {
                         StatusTag(text: "Current", kind: .approved)
                     }
                 }

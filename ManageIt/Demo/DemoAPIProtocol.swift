@@ -7,6 +7,10 @@ import Foundation
 /// from an in-memory `DemoDataStore`. Activated via `DemoAPIProtocol.enable()`.
 final class DemoAPIProtocol: URLProtocol {
     nonisolated(unsafe) static var isEnabled = false
+    /// When `true`, intercepted movement POSTs synthesize a network error so
+    /// the offline-sync coordinator can exercise its queue/replay path against
+    /// the demo backend. Toggled from Account → Debug section.
+    nonisolated(unsafe) static var simulateOffline = false
     nonisolated(unsafe) static let store = DemoDataStore()
 
     static let demoHost = "demo.manageit.local"
@@ -20,6 +24,11 @@ final class DemoAPIProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        if DemoAPIProtocol.simulateOffline, Self.isMovementWrite(request: request) {
+            let error = URLError(.notConnectedToInternet)
+            client?.urlProtocol(self, didFailWithError: error)
+            return
+        }
         let (status, payload) = DemoAPIProtocol.store.respond(to: request)
         let url = request.url!
         let response = HTTPURLResponse(
@@ -41,6 +50,12 @@ final class DemoAPIProtocol: URLProtocol {
         guard !isEnabled else { return }
         URLProtocol.registerClass(DemoAPIProtocol.self)
         isEnabled = true
+    }
+
+    private static func isMovementWrite(request: URLRequest) -> Bool {
+        guard request.httpMethod == "POST" else { return false }
+        guard let path = request.url?.path else { return false }
+        return path.hasPrefix("/api/items/") && path.hasSuffix("/movements")
     }
 }
 
@@ -378,6 +393,28 @@ final class DemoDataStore: @unchecked Sendable {
         else { return .failure(errorEnvelope(code: "VALIDATION_ERROR", message: "Invalid movement payload")) }
 
         var item = items[idx]
+
+        // Offline replay stale-source check.
+        if let expectedSource = json["expectedSourcePlacement"] as? [String: Any] {
+            let expectedPresence = (expectedSource["presenceType"] as? String) ?? ""
+            let expectedLocId = (expectedSource["locationId"] as? Int).map(Int64.init) ?? (expectedSource["locationId"] as? Int64)
+            let expectedOrgId = (expectedSource["organizationId"] as? Int).map(Int64.init) ?? (expectedSource["organizationId"] as? Int64)
+            let matches = expectedPresence == item.presenceType
+                && expectedLocId == item.locationId
+                && expectedOrgId == item.organizationId
+            if !matches {
+                let detail: [String: Any] = [
+                    "expectedSourcePlacement": expectedSource,
+                    "currentServerPlacement": [
+                        "presenceType": item.presenceType,
+                        "locationId": item.locationId as Any? ?? NSNull(),
+                        "organizationId": item.organizationId as Any? ?? NSNull()
+                    ]
+                ]
+                return .failure(staleReplayEnvelope(detail: detail))
+            }
+        }
+
         let presenceType = (json["presenceType"] as? String) ?? "INTERNAL"
         let moveInDate = (json["moveInDate"] as? String) ?? "2026-01-01"
 
@@ -609,6 +646,17 @@ final class DemoDataStore: @unchecked Sendable {
             itemIds: itemIds
         )
         return .success(exhibitions[idx])
+    }
+
+    private func staleReplayEnvelope(detail: [String: Any]) -> Data {
+        let envelope: [String: Any] = [
+            "error": [
+                "code": "STALE_OFFLINE_MOVEMENT",
+                "message": "The queued movement no longer matches the current server state and was rejected.",
+                "details": detail
+            ]
+        ]
+        return dictData(envelope)
     }
 
     private func overlapEnvelope(itemId: Int64, conflicting: DemoExhibition) -> Data {

@@ -26,6 +26,9 @@ final class ItemDetailFeatureModel {
     let reminderCoordinator: ReminderCoordinator
 
     @ObservationIgnored
+    let offlineSyncCoordinator: OfflineSyncCoordinator
+
+    @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
 
     @ObservationIgnored
@@ -46,6 +49,7 @@ final class ItemDetailFeatureModel {
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
         reminderCoordinator: ReminderCoordinator,
+        offlineSyncCoordinator: OfflineSyncCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void,
         onItemUpdated: @escaping (ItemResponse) -> Void,
@@ -56,6 +60,7 @@ final class ItemDetailFeatureModel {
         self.sessionModel = sessionModel
         self.apiClient = apiClient
         self.reminderCoordinator = reminderCoordinator
+        self.offlineSyncCoordinator = offlineSyncCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
         self.onItemUpdated = onItemUpdated
@@ -80,11 +85,15 @@ final class ItemDetailFeatureModel {
             let result = try await authenticated.perform { url, token in
                 try await self.apiClient.fetchItem(serverURL: url, accessToken: token, itemID: self.itemID)
             }
-            self.item = result
+            self.item = offlineSyncCoordinator.overlay(result)
             await loadHistory()
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
+    }
+
+    var queuedOfflineEntry: OfflineMovementEntry? {
+        offlineSyncCoordinator.entry(for: itemID)
     }
 
     func reload() async {
@@ -96,14 +105,26 @@ final class ItemDetailFeatureModel {
         historyErrorMessage = nil
         defer { isLoadingHistory = false }
         do {
-            let entries = try await authenticated.perform { url, token in
+            var entries = try await authenticated.perform { url, token in
                 try await self.apiClient.fetchItemHistory(serverURL: url, accessToken: token, itemID: self.itemID)
+            }
+            // Prepend a synthetic entry for any outstanding queued offline move
+            // so the user sees the pending row immediately while offline.
+            if let entry = offlineSyncCoordinator.entry(for: itemID), entry.status != .rejected {
+                let pending = offlineSyncCoordinator.optimisticHistoryEntry(for: entry)
+                entries.insert(pending, at: 0)
             }
             self.historyEntries = entries
             await syncRentalReminderFromCurrentData()
         } catch {
             historyErrorMessage = AuthenticatedAPI.userFacing(error)
         }
+    }
+
+    func discardQueuedEntry() {
+        guard let entry = queuedOfflineEntry else { return }
+        offlineSyncCoordinator.discard(entryId: entry.id)
+        Task { await load() }
     }
 
     private func syncRentalReminderFromCurrentData() async {
@@ -174,11 +195,11 @@ final class ItemDetailFeatureModel {
     func makeMovementModel() -> MovementFeatureModel? {
         guard let item else { return nil }
         return MovementFeatureModel(
-            itemID: item.id,
-            currentPresence: item.currentPlacement.presenceType,
+            item: item,
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
+            offlineSyncCoordinator: offlineSyncCoordinator,
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated
         )

@@ -595,11 +595,18 @@ struct AccountView: View {
     let context: StoredDeviceContext
 
     @Bindable private var coordinator: ReminderCoordinator
+    @Bindable private var offlineSync: OfflineSyncCoordinator
+    @State private var isReplayingNow = false
+
+    #if DEBUG
+    @State private var simulateOffline = DemoAPIProtocol.simulateOffline
+    #endif
 
     init(appModel: AppModel, context: StoredDeviceContext) {
         self.appModel = appModel
         self.context = context
         self._coordinator = Bindable(appModel.reminderCoordinator)
+        self._offlineSync = Bindable(appModel.offlineSyncCoordinator)
     }
 
     var body: some View {
@@ -639,6 +646,10 @@ struct AccountView: View {
                 .museumPanel()
 
                 remindersSection
+                offlineSyncSection
+                #if DEBUG
+                debugSimulateOfflineSection
+                #endif
 
                 Button {
                     Task { await appModel.logoutCurrentDevice() }
@@ -723,6 +734,118 @@ struct AccountView: View {
                 .foregroundStyle(AppTheme.ink)
         }
     }
+
+    // MARK: - Offline sync section
+
+    private var offlineSyncSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Offline movement sync")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(AppTheme.ink)
+
+            HStack(spacing: 12) {
+                Image(systemName: offlineSync.hasQueuedMoves ? "tray.and.arrow.up.fill" : "checkmark.seal.fill")
+                    .foregroundStyle(offlineSync.hasQueuedMoves ? AppTheme.plannedText : AppTheme.approvedText)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(offlineSync.queuedEntries.count) queued · \(offlineSync.rejectedEntries.count) rejected")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(AppTheme.ink)
+                    if let last = offlineSync.lastReplaySummary, let when = offlineSync.lastReplayAt {
+                        Text("Last replay: \(when.formatted(date: .omitted, time: .shortened)) — \(last)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(AppTheme.mutedInk)
+                    } else {
+                        Text("Movements made while offline are queued here and replayed on next sync.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(AppTheme.mutedInk)
+                    }
+                }
+                Spacer()
+            }
+
+            Button {
+                Task {
+                    isReplayingNow = true
+                    _ = await offlineSync.replay()
+                    isReplayingNow = false
+                }
+            } label: {
+                if isReplayingNow || offlineSync.isReplaying {
+                    ProgressView().tint(.white)
+                } else {
+                    Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(offlineSync.isReplaying)
+
+            if !offlineSync.rejectedEntries.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Rejected entries")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(AppTheme.rejectedText)
+                    ForEach(offlineSync.rejectedEntries) { entry in
+                        rejectedEntryRow(entry: entry)
+                    }
+                }
+            }
+        }
+        .museumPanel()
+    }
+
+    private func rejectedEntryRow(entry: OfflineMovementEntry) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.octagon.fill")
+                .foregroundStyle(AppTheme.rejectedText)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Item #\(entry.itemId) — \(entry.optimisticItem.title)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(AppTheme.ink)
+                if let lastError = entry.lastError {
+                    Text(lastError)
+                        .font(.system(size: 11))
+                        .foregroundStyle(AppTheme.mutedInk)
+                }
+            }
+            Spacer()
+            Button {
+                offlineSync.discard(entryId: entry.id)
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundStyle(AppTheme.rejectedText)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(AppTheme.rejectedBg))
+    }
+
+    #if DEBUG
+    private var debugSimulateOfflineSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi.slash")
+                    .foregroundStyle(AppTheme.mutedInk)
+                Text("Debug: simulate offline")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(AppTheme.ink)
+            }
+            Toggle(isOn: $simulateOffline) {
+                Text("Force movement POSTs to fail")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AppTheme.mutedInk)
+            }
+            .tint(AppTheme.primary)
+            .onChange(of: simulateOffline) { _, newValue in
+                DemoAPIProtocol.simulateOffline = newValue
+            }
+            Text("Affects only the demo backend. Use it to test the offline outbox flow: create a move and it will be queued instead of saved.")
+                .font(.system(size: 11))
+                .foregroundStyle(AppTheme.mutedInk)
+        }
+        .museumPanel()
+    }
+    #endif
 }
 
 #Preview {

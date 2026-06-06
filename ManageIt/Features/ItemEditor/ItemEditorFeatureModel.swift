@@ -107,6 +107,12 @@ final class ItemEditorFeatureModel: Identifiable {
                 try await self.apiClient.fetchLocations(serverURL: url, accessToken: token, includeArchived: false)
             }
             self.availableLocations = locations
+        } catch let error as ManageItError {
+            if case .transportFailure = error {
+                errorMessage = "Offline. Online connection is required to create new items because they must be registered on the server."
+            } else {
+                errorMessage = AuthenticatedAPI.userFacing(error)
+            }
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }

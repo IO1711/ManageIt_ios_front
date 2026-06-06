@@ -1,16 +1,39 @@
 import Foundation
 
-struct MovementOrganizationInput: Encodable, Equatable {
+struct MovementOrganizationInput: Codable, Equatable {
     let id: Int64?
     let name: String?
 }
 
-struct ItemMovementCreateRequest: Encodable, Equatable {
+/// Snapshot of the item's expected current placement on the iPhone at queue
+/// time. Sent back during offline replay so the server can reject the write
+/// if its database state has drifted since the queued move was authored
+/// (`STALE_OFFLINE_MOVEMENT`).
+struct ExpectedSourcePlacement: Codable, Equatable {
+    let presenceType: ItemPresenceType
+    let locationId: Int64?
+    let organizationId: Int64?
+
+    init(presenceType: ItemPresenceType, locationId: Int64?, organizationId: Int64?) {
+        self.presenceType = presenceType
+        self.locationId = locationId
+        self.organizationId = organizationId
+    }
+
+    init(placement: ItemPlacement) {
+        self.presenceType = placement.presenceType
+        self.locationId = placement.location?.id
+        self.organizationId = placement.organization?.id
+    }
+}
+
+struct ItemMovementCreateRequest: Codable, Equatable {
     let presenceType: ItemPresenceType
     let locationId: Int64?
     let organization: MovementOrganizationInput?
     let moveInDate: BusinessDate
     let expectedReturnDate: BusinessDate?
+    let expectedSourcePlacement: ExpectedSourcePlacement?
 }
 
 enum MovementEntryMode: Equatable {

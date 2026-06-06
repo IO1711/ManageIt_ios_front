@@ -115,7 +115,10 @@ struct InventoryFeatureView: View {
                     Button {
                         onSelectItem(item.id)
                     } label: {
-                        InventoryItemRow(item: item)
+                        InventoryItemRow(
+                            item: item,
+                            queuedEntry: store.offlineSyncCoordinator.entry(for: item.id)
+                        )
                     }
                     .buttonStyle(.plain)
                     .onAppear {
@@ -177,6 +180,7 @@ struct InventoryFeatureView: View {
 
 struct InventoryItemRow: View {
     let item: ItemResponse
+    var queuedEntry: OfflineMovementEntry? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -197,6 +201,10 @@ struct InventoryItemRow: View {
                     Spacer()
                     if item.archived {
                         StatusTag(text: "Archived", kind: .expired)
+                    } else if let queuedEntry, queuedEntry.status == .rejected {
+                        StatusTag(text: "Rejected", kind: .rejected)
+                    } else if queuedEntry != nil {
+                        StatusTag(text: "Queued offline", kind: .planned)
                     } else {
                         placementTag
                     }

@@ -28,6 +28,9 @@ final class InventoryFeatureModel {
     let reminderCoordinator: ReminderCoordinator
 
     @ObservationIgnored
+    let offlineSyncCoordinator: OfflineSyncCoordinator
+
+    @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
 
     @ObservationIgnored
@@ -45,6 +48,7 @@ final class InventoryFeatureModel {
         apiClient: ManageItAPIClient,
         preferences: AppPreferences,
         reminderCoordinator: ReminderCoordinator,
+        offlineSyncCoordinator: OfflineSyncCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void
     ) {
@@ -53,6 +57,7 @@ final class InventoryFeatureModel {
         self.apiClient = apiClient
         self.preferences = preferences
         self.reminderCoordinator = reminderCoordinator
+        self.offlineSyncCoordinator = offlineSyncCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
 
@@ -155,10 +160,12 @@ final class InventoryFeatureModel {
             let response = try await authenticated.perform { url, token in
                 try await self.apiClient.fetchItems(serverURL: url, accessToken: token, query: snapshot)
             }
+            // Overlay optimistic placement for any items with queued offline moves.
+            let overlaid = offlineSyncCoordinator.overlay(response.items)
             if replace {
-                items = response.items
+                items = overlaid
             } else {
-                items.append(contentsOf: response.items)
+                items.append(contentsOf: overlaid)
             }
             totalItems = response.totalItems
             totalPages = response.totalPages
@@ -176,6 +183,7 @@ final class InventoryFeatureModel {
             sessionModel: sessionModel,
             apiClient: apiClient,
             reminderCoordinator: reminderCoordinator,
+            offlineSyncCoordinator: offlineSyncCoordinator,
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated,
             onItemUpdated: { [weak self] updated in
@@ -207,6 +215,7 @@ final class InventoryFeatureModel {
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
+            offlineSyncCoordinator: offlineSyncCoordinator,
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated
         )

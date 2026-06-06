@@ -27,6 +27,9 @@ final class LocationManagementFeatureModel {
     private let apiClient: ManageItAPIClient
 
     @ObservationIgnored
+    let offlineSyncCoordinator: OfflineSyncCoordinator
+
+    @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
 
     @ObservationIgnored
@@ -39,12 +42,14 @@ final class LocationManagementFeatureModel {
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
+        offlineSyncCoordinator: OfflineSyncCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void
     ) {
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
+        self.offlineSyncCoordinator = offlineSyncCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
         self.authenticated = AuthenticatedAPI(
@@ -65,6 +70,11 @@ final class LocationManagementFeatureModel {
                 try await self.apiClient.fetchLocations(serverURL: url, accessToken: token, includeArchived: self.includeArchived)
             }
             self.locations = result
+            // Refresh the offline cache only with the unfiltered list to avoid
+            // leaking archived items into picker fallbacks.
+            if !includeArchived {
+                offlineSyncCoordinator.updateLocationCache(result)
+            }
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
