@@ -14,12 +14,16 @@ final class ItemDetailFeatureModel {
     var historyErrorMessage: String?
 
     var storedContext: StoredDeviceContext
+    var scheduledRentalReminderDate: Date?
 
     @ObservationIgnored
     private let sessionModel: DeviceSessionModel
 
     @ObservationIgnored
     private let apiClient: ManageItAPIClient
+
+    @ObservationIgnored
+    let reminderCoordinator: ReminderCoordinator
 
     @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
@@ -41,6 +45,7 @@ final class ItemDetailFeatureModel {
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
+        reminderCoordinator: ReminderCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void,
         onItemUpdated: @escaping (ItemResponse) -> Void,
@@ -50,6 +55,7 @@ final class ItemDetailFeatureModel {
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
+        self.reminderCoordinator = reminderCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
         self.onItemUpdated = onItemUpdated
@@ -94,9 +100,25 @@ final class ItemDetailFeatureModel {
                 try await self.apiClient.fetchItemHistory(serverURL: url, accessToken: token, itemID: self.itemID)
             }
             self.historyEntries = entries
+            await syncRentalReminderFromCurrentData()
         } catch {
             historyErrorMessage = AuthenticatedAPI.userFacing(error)
         }
+    }
+
+    private func syncRentalReminderFromCurrentData() async {
+        guard let item else {
+            await reminderCoordinator.syncRentalReminder(itemId: itemID, itemTitle: "Item", openRental: nil)
+            scheduledRentalReminderDate = nil
+            return
+        }
+        let openExternal = historyEntries.first(where: { $0.isOpen && $0.presenceType == .external })
+        await reminderCoordinator.syncRentalReminder(
+            itemId: itemID,
+            itemTitle: item.title,
+            openRental: openExternal
+        )
+        scheduledRentalReminderDate = await reminderCoordinator.scheduledRentalReminderDate(for: itemID)
     }
 
     func archiveItem() async {
@@ -109,6 +131,8 @@ final class ItemDetailFeatureModel {
             }
             self.item = archived
             self.onItemArchived(archived)
+            reminderCoordinator.cancelRentalReminder(for: itemID)
+            scheduledRentalReminderDate = nil
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
@@ -117,6 +141,7 @@ final class ItemDetailFeatureModel {
     func applyUpdatedItem(_ updated: ItemResponse) {
         self.item = updated
         onItemUpdated(updated)
+        Task { await self.syncRentalReminderFromCurrentData() }
     }
 
     // MARK: - Child models

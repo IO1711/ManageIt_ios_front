@@ -25,6 +25,9 @@ final class InventoryFeatureModel {
     private let preferences: AppPreferences
 
     @ObservationIgnored
+    let reminderCoordinator: ReminderCoordinator
+
+    @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
 
     @ObservationIgnored
@@ -41,6 +44,7 @@ final class InventoryFeatureModel {
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
         preferences: AppPreferences,
+        reminderCoordinator: ReminderCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void
     ) {
@@ -48,6 +52,7 @@ final class InventoryFeatureModel {
         self.sessionModel = sessionModel
         self.apiClient = apiClient
         self.preferences = preferences
+        self.reminderCoordinator = reminderCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
 
@@ -170,6 +175,7 @@ final class InventoryFeatureModel {
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
+            reminderCoordinator: reminderCoordinator,
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated,
             onItemUpdated: { [weak self] updated in

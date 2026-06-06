@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 struct ContentView: View {
     let appModel: AppModel
@@ -593,6 +594,14 @@ struct AccountView: View {
     let appModel: AppModel
     let context: StoredDeviceContext
 
+    @Bindable private var coordinator: ReminderCoordinator
+
+    init(appModel: AppModel, context: StoredDeviceContext) {
+        self.appModel = appModel
+        self.context = context
+        self._coordinator = Bindable(appModel.reminderCoordinator)
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
@@ -629,6 +638,8 @@ struct AccountView: View {
                 }
                 .museumPanel()
 
+                remindersSection
+
                 Button {
                     Task { await appModel.logoutCurrentDevice() }
                 } label: {
@@ -641,6 +652,64 @@ struct AccountView: View {
         .background(AppTheme.canvas.ignoresSafeArea())
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await coordinator.refreshPermissionStatus()
+        }
+    }
+
+    private var remindersSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Local reminders")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(AppTheme.ink)
+
+            HStack {
+                Image(systemName: "bell.fill")
+                    .foregroundStyle(coordinator.isAuthorized ? AppTheme.primary : AppTheme.mutedInk)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Notification status")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(AppTheme.mutedInk)
+                    Text(coordinator.permissionStatus.humanReadable)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(AppTheme.ink)
+                }
+                Spacer()
+            }
+
+            Text("Exhibition end reminders fire on the end date. Rental return reminders fire 3 calendar days before the expected return date. Both are scheduled locally on this iPhone.")
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.mutedInk)
+
+            HStack(spacing: 10) {
+                switch coordinator.permissionStatus {
+                case .notDetermined:
+                    Button {
+                        Task { await coordinator.requestPermission() }
+                    } label: {
+                        Label("Allow notifications", systemImage: "bell.badge.fill")
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                case .denied:
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        Label("Open iOS Settings", systemImage: "gear")
+                    }
+                    .buttonStyle(SoftButtonStyle())
+                case .authorized, .provisional, .ephemeral:
+                    Label("Reminders are active", systemImage: "checkmark.seal.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(AppTheme.approvedText)
+                @unknown default:
+                    EmptyView()
+                }
+                Spacer()
+            }
+        }
+        .museumPanel()
     }
 
     private func detailRow(_ label: String, _ value: String) -> some View {

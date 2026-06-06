@@ -123,9 +123,27 @@ struct ItemDetailView: View {
                         tint: AppTheme.plannedText
                     )
                 }
+
+                if item.currentPlacement.presenceType == .external,
+                   let scheduled = store.scheduledRentalReminderDate {
+                    rentalReminderChip(date: scheduled)
+                }
             }
         }
         .museumPanel()
+    }
+
+    private func rentalReminderChip(date: Date) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "bell.fill")
+                .font(.system(size: 11))
+            Text("Return reminder set for \(date.formatted(date: .abbreviated, time: .shortened))")
+                .font(.system(size: 11, weight: .medium))
+        }
+        .foregroundStyle(AppTheme.plannedText)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(AppTheme.plannedBg))
     }
 
     private var historySection: some View {

@@ -18,6 +18,7 @@ final class AppModel {
     var sessionModel: DeviceSessionModel
     var inventoryModel: InventoryFeatureModel?
     var exhibitionsModel: ExhibitionsFeatureModel?
+    var reminderCoordinator: ReminderCoordinator
 
     @ObservationIgnored
     private let preferences: AppPreferences
@@ -49,6 +50,7 @@ final class AppModel {
         self.preferences = preferences
         self.keychainStore = keychainStore
         self.apiClient = apiClient
+        self.reminderCoordinator = ReminderCoordinator()
 
         let storedContext = preferences.loadDeviceContext()
         self.pairedDevice = storedContext
@@ -103,6 +105,7 @@ final class AppModel {
             inventoryModel = makeInventoryModel(for: session.context)
             exhibitionsModel = makeExhibitionsModel(for: session.context)
             appPhase = .active
+            await reminderCoordinator.requestPermissionIfNeeded()
         } catch {
             appPhase = .sessionRecovery
         }
@@ -140,6 +143,7 @@ final class AppModel {
         inventoryModel = makeInventoryModel(for: context)
         exhibitionsModel = makeExhibitionsModel(for: context)
         appPhase = .active
+        Task { await reminderCoordinator.requestPermissionIfNeeded() }
     }
 
     func applyRefreshedSession(_ session: ActiveDeviceSession) {
@@ -225,6 +229,7 @@ final class AppModel {
             storedContext: context,
             sessionModel: sessionModel,
             apiClient: apiClient,
+            reminderCoordinator: reminderCoordinator,
             onContextUpdated: { [weak self] updated in
                 self?.pairedDevice = updated
                 self?.preferences.saveDeviceContext(updated)
@@ -241,6 +246,7 @@ final class AppModel {
             sessionModel: sessionModel,
             apiClient: apiClient,
             preferences: preferences,
+            reminderCoordinator: reminderCoordinator,
             onContextUpdated: { [weak self] updated in
                 self?.pairedDevice = updated
                 self?.preferences.saveDeviceContext(updated)

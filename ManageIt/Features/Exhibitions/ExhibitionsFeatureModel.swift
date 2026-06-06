@@ -19,6 +19,9 @@ final class ExhibitionsFeatureModel {
     private let apiClient: ManageItAPIClient
 
     @ObservationIgnored
+    let reminderCoordinator: ReminderCoordinator
+
+    @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
 
     @ObservationIgnored
@@ -31,12 +34,14 @@ final class ExhibitionsFeatureModel {
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
+        reminderCoordinator: ReminderCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void
     ) {
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
+        self.reminderCoordinator = reminderCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
         self.authenticated = AuthenticatedAPI(
@@ -77,6 +82,7 @@ final class ExhibitionsFeatureModel {
                 }
                 return lhs.startDate < rhs.startDate
             }
+            await reminderCoordinator.syncExhibitionReminders(self.exhibitions)
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
@@ -94,10 +100,16 @@ final class ExhibitionsFeatureModel {
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
+            reminderCoordinator: reminderCoordinator,
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated,
             onExhibitionUpdated: { [weak self] updated in
                 self?.replaceExhibition(updated)
+                Task {
+                    if let exhibitions = self?.exhibitions {
+                        await self?.reminderCoordinator.syncExhibitionReminders(exhibitions)
+                    }
+                }
             }
         )
     }

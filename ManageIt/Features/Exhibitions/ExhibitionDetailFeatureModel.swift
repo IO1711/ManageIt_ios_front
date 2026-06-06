@@ -10,12 +10,16 @@ final class ExhibitionDetailFeatureModel {
     var errorMessage: String?
 
     var storedContext: StoredDeviceContext
+    var scheduledReminderDate: Date?
 
     @ObservationIgnored
     private let sessionModel: DeviceSessionModel
 
     @ObservationIgnored
     private let apiClient: ManageItAPIClient
+
+    @ObservationIgnored
+    let reminderCoordinator: ReminderCoordinator
 
     @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
@@ -34,6 +38,7 @@ final class ExhibitionDetailFeatureModel {
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
+        reminderCoordinator: ReminderCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void,
         onExhibitionUpdated: @escaping (ExhibitionResponse) -> Void
@@ -42,6 +47,7 @@ final class ExhibitionDetailFeatureModel {
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
+        self.reminderCoordinator = reminderCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
         self.onExhibitionUpdated = onExhibitionUpdated
@@ -65,6 +71,8 @@ final class ExhibitionDetailFeatureModel {
                 try await self.apiClient.fetchExhibition(serverURL: url, accessToken: token, id: self.exhibitionID)
             }
             self.exhibition = result
+            self.scheduledReminderDate = await reminderCoordinator
+                .scheduledExhibitionReminderDate(for: exhibitionID)
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }

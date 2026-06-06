@@ -1,4 +1,5 @@
 import SwiftUI
+import UserNotifications
 
 struct ExhibitionDetailView: View {
     let store: ExhibitionDetailFeatureModel
@@ -64,13 +65,39 @@ struct ExhibitionDetailView: View {
                 dateColumn(title: "End", date: exhibition.endDate)
             }
 
-            if exhibition.phase == .planned {
-                Text("Clients will schedule a local end reminder from the end date.")
+            if let scheduled = store.scheduledReminderDate {
+                reminderChip(text: "Local end reminder set for \(scheduled.formatted(date: .abbreviated, time: .shortened))")
+            } else if exhibition.phase != .ended {
+                Text(reminderHint(for: store.reminderCoordinator.permissionStatus))
                     .font(.system(size: 11))
                     .foregroundStyle(AppTheme.mutedInk)
             }
         }
         .museumPanel()
+    }
+
+    private func reminderHint(for status: UNAuthorizationStatus) -> String {
+        switch status {
+        case .denied:
+            return "Notifications are disabled — enable them in iOS Settings to receive an end-of-exhibition reminder."
+        case .notDetermined:
+            return "Allow notifications to receive a local end-of-exhibition reminder."
+        default:
+            return "Local end reminder will be scheduled from the end date."
+        }
+    }
+
+    private func reminderChip(text: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "bell.fill")
+                .font(.system(size: 11))
+            Text(text)
+                .font(.system(size: 11, weight: .medium))
+        }
+        .foregroundStyle(AppTheme.plannedText)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(AppTheme.plannedBg))
     }
 
     private func itemsSection(exhibition: ExhibitionResponse) -> some View {
