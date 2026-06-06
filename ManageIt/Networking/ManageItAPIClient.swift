@@ -611,7 +611,9 @@ struct ManageItAPIClient {
         }
 
         var basePath = components.path
-        while basePath.hasSuffix("/") && basePath.count > 1 {
+        // Trim every trailing slash, including a lone "/", so the joined path
+        // never gets a double slash like "//api/locations".
+        while basePath.hasSuffix("/") {
             basePath.removeLast()
         }
 

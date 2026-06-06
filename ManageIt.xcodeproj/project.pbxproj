@@ -6,8 +6,19 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXContainerItemProxy section */
+		24A00000000000000000000B /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 24069C4E2FB35D4400B5D6AF /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 24069C552FB35D4400B5D6AF;
+			remoteInfo = ManageIt;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
 		24069C562FB35D4400B5D6AF /* ManageIt.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ManageIt.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		24A000000000000000000001 /* ManageItTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ManageItTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +27,22 @@
 			path = ManageIt;
 			sourceTree = "<group>";
 		};
+		24A000000000000000000002 /* ManageItTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ManageItTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		24069C532FB35D4400B5D6AF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		24A000000000000000000006 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +56,7 @@
 			isa = PBXGroup;
 			children = (
 				24069C582FB35D4400B5D6AF /* ManageIt */,
+				24A000000000000000000002 /* ManageItTests */,
 				24069C572FB35D4400B5D6AF /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,6 +65,7 @@
 			isa = PBXGroup;
 			children = (
 				24069C562FB35D4400B5D6AF /* ManageIt.app */,
+				24A000000000000000000001 /* ManageItTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -70,6 +95,29 @@
 			productReference = 24069C562FB35D4400B5D6AF /* ManageIt.app */;
 			productType = "com.apple.product-type.application";
 		};
+		24A000000000000000000003 /* ManageItTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 24A000000000000000000004 /* Build configuration list for PBXNativeTarget "ManageItTests" */;
+			buildPhases = (
+				24A000000000000000000005 /* Sources */,
+				24A000000000000000000006 /* Frameworks */,
+				24A000000000000000000007 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				24A000000000000000000008 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				24A000000000000000000002 /* ManageItTests */,
+			);
+			name = ManageItTests;
+			packageProductDependencies = (
+			);
+			productName = ManageItTests;
+			productReference = 24A000000000000000000001 /* ManageItTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +130,10 @@
 				TargetAttributes = {
 					24069C552FB35D4400B5D6AF = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					24A000000000000000000003 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 24069C552FB35D4400B5D6AF;
 					};
 				};
 			};
@@ -100,12 +152,20 @@
 			projectRoot = "";
 			targets = (
 				24069C552FB35D4400B5D6AF /* ManageIt */,
+				24A000000000000000000003 /* ManageItTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		24069C542FB35D4400B5D6AF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		24A000000000000000000007 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +182,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		24A000000000000000000005 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		24A000000000000000000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 24069C552FB35D4400B5D6AF /* ManageIt */;
+			targetProxy = 24A00000000000000000000B /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		24069C5F2FB35D4500B5D6AF /* Debug */ = {
@@ -312,6 +387,53 @@
 			};
 			name = Release;
 		};
+		24A000000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TJNHB2R4K6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.bestAppleDev.ManageItTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ManageIt.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ManageIt";
+			};
+			name = Debug;
+		};
+		24A00000000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = TJNHB2R4K6;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.bestAppleDev.ManageItTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ManageIt.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ManageIt";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -329,6 +451,15 @@
 			buildConfigurations = (
 				24069C622FB35D4500B5D6AF /* Debug */,
 				24069C632FB35D4500B5D6AF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		24A000000000000000000004 /* Build configuration list for PBXNativeTarget "ManageItTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				24A000000000000000000009 /* Debug */,
+				24A00000000000000000000A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
