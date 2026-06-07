@@ -2,23 +2,26 @@ import SwiftUI
 
 struct ExhibitionEditorView: View {
     let store: ExhibitionEditorFeatureModel
-    let onCompleted: (ExhibitionDetailResponse) -> Void
+    let onCompleted: (ExhibitionResponse) -> Void
     let onCancel: () -> Void
+
+    @State private var showLocationPicker = false
 
     var body: some View {
         @Bindable var store = store
 
         ScrollView {
             VStack(spacing: 16) {
-                basicsSection(store: store)
+                nameSection(store: store)
                 locationSection(store: store)
+                datesSection(store: store)
                 itemsSection(store: store)
 
                 if let validation = store.validationMessage {
-                    inlineMessage(text: validation, tone: .rejected)
+                    inlineMessage(text: validation)
                 }
                 if let error = store.errorMessage {
-                    inlineMessage(text: error, tone: .rejected)
+                    inlineMessage(text: error)
                 }
 
                 Button {
@@ -27,11 +30,11 @@ struct ExhibitionEditorView: View {
                     if store.isSaving {
                         ProgressView().tint(.white)
                     } else {
-                        Text(store.mode.title)
+                        Text(store.isEditMode ? "Save changes" : "Create exhibition")
                     }
                 }
                 .buttonStyle(PrimaryButtonStyle(fillWidth: true))
-                .disabled(store.isSaving || store.isLoadingDependencies)
+                .disabled(store.isSaving)
             }
             .padding(20)
         }
@@ -44,33 +47,66 @@ struct ExhibitionEditorView: View {
             }
         }
         .task {
-            await store.loadDependenciesIfNeeded()
+            if store.availableLocations.isEmpty {
+                await store.loadDependencies()
+            }
         }
         .onChange(of: store.saveSucceeded) { _, newValue in
             if newValue, let saved = store.savedExhibition {
                 onCompleted(saved)
             }
         }
+        .sheet(isPresented: $showLocationPicker) {
+            LocationTreePicker(
+                allLocations: store.availableLocations,
+                onSelect: { selected in
+                    store.selectLocation(selected)
+                    showLocationPicker = false
+                },
+                onCancel: { showLocationPicker = false }
+            )
+        }
     }
 
-    private func basicsSection(store: ExhibitionEditorFeatureModel) -> some View {
+    private func nameSection(store: ExhibitionEditorFeatureModel) -> some View {
         @Bindable var store = store
 
-        return VStack(alignment: .leading, spacing: 14) {
-            sectionHeader("Basics")
-
-            FormFieldContainer(title: "Exhibition name") {
-                TextField("Autumn Masks 2026", text: $store.name)
+        return VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("Exhibition name")
+            FormFieldContainer(title: "Name") {
+                TextField("e.g. Autumn Masks 2026", text: $store.name)
                     .autocorrectionDisabled()
             }
+        }
+        .museumPanel()
+    }
 
+    private func locationSection(store: ExhibitionEditorFeatureModel) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("Internal location")
+            LocationTreeField(
+                title: "Leaf location",
+                selected: store.selectedLocation,
+                onTap: { showLocationPicker = true }
+            )
+            Text("Active exhibitions require every linked item to currently sit at this exact leaf location.")
+                .font(.system(size: 11))
+                .foregroundStyle(AppTheme.mutedInk)
+        }
+        .museumPanel()
+    }
+
+    private func datesSection(store: ExhibitionEditorFeatureModel) -> some View {
+        @Bindable var store = store
+
+        return VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("Dates")
             FormFieldContainer(title: "Start date") {
                 BusinessDatePickerField(date: Binding(
                     get: { store.startDate },
                     set: { store.startDate = $0 }
                 ))
             }
-
             FormFieldContainer(title: "End date") {
                 BusinessDatePickerField(date: Binding(
                     get: { store.endDate },
@@ -81,102 +117,91 @@ struct ExhibitionEditorView: View {
         .museumPanel()
     }
 
-    private func locationSection(store: ExhibitionEditorFeatureModel) -> some View {
-        @Bindable var store = store
-
-        return VStack(alignment: .leading, spacing: 14) {
-            sectionHeader("Exhibition location")
-
-            if store.isLoadingDependencies && store.locationOptions.isEmpty {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-            } else {
-                FormFieldContainer(title: "Leaf location") {
-                    Picker("Leaf location", selection: Binding(
-                        get: { store.selectedLocationID ?? -1 },
-                        set: { store.selectedLocationID = $0 == -1 ? nil : $0 }
-                    )) {
-                        Text("Select location").tag(Int64(-1))
-                        ForEach(store.locationOptions) { location in
-                            Text(location.displayLabel).tag(location.id)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .tint(AppTheme.ink)
-                }
-            }
-        }
-        .museumPanel()
-    }
-
     private func itemsSection(store: ExhibitionEditorFeatureModel) -> some View {
         @Bindable var store = store
 
-        return VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: 12) {
             sectionHeader("Linked items")
 
             if !store.selectedItems.isEmpty {
-                FlowLayout(spacing: 6) {
+                VStack(spacing: 6) {
                     ForEach(store.selectedItems) { item in
-                        HStack(spacing: 6) {
-                            Text(item.mainInventoryNumber)
-                                .font(.system(size: 12, weight: .bold))
-                            Text(item.title)
-                                .font(.system(size: 12, weight: .medium))
-                                .lineLimit(1)
-                            Button {
-                                store.toggleItemSelection(item)
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 10, weight: .bold))
+                        let warning = store.itemPlacementWarning(item)
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "square.stack.fill")
+                                    .foregroundStyle(warning == nil ? AppTheme.primary : AppTheme.rejectedText)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.title)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(AppTheme.ink)
+                                    Text(item.mainInventoryNumber)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(AppTheme.mutedInk)
+                                }
+                                Spacer()
+                                Button {
+                                    store.removeItem(id: item.id)
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                        .foregroundStyle(AppTheme.rejectedText)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            if let warning {
+                                HStack(spacing: 4) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 10))
+                                    Text(warning)
+                                        .font(.system(size: 11))
+                                }
+                                .foregroundStyle(AppTheme.rejectedText)
                             }
                         }
-                        .foregroundStyle(AppTheme.primary)
                         .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Capsule().fill(AppTheme.primarySoft))
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10).fill(warning == nil ? AppTheme.canvas : AppTheme.rejectedBg)
+                        )
                     }
                 }
             }
 
-            FormFieldContainer(title: "Search items") {
-                TextField("Title, inventory number, location…", text: $store.itemSearchText)
+            FormFieldContainer(title: "Search items to add") {
+                TextField("Title, inventory number…", text: $store.itemQuery)
                     .autocorrectionDisabled()
+                    .onChange(of: store.itemQuery) { _, value in
+                        store.searchItems(query: value)
+                    }
             }
 
-            if store.isLoadingDependencies && store.candidateItems.isEmpty {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-            } else {
-                VStack(spacing: 8) {
-                    ForEach(store.filteredCandidateItems) { item in
+            if !store.itemSuggestions.isEmpty {
+                VStack(spacing: 6) {
+                    ForEach(store.itemSuggestions) { item in
                         Button {
-                            store.toggleItemSelection(item)
+                            store.addItem(item)
                         } label: {
-                            HStack(alignment: .top, spacing: 12) {
-                                Image(systemName: store.selectedItemIDs.contains(item.id) ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 18))
-                                    .foregroundStyle(store.selectedItemIDs.contains(item.id) ? AppTheme.primary : AppTheme.subtleInk)
-
-                                VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "square.stack")
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text(item.title)
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundStyle(AppTheme.ink)
+                                        .font(.system(size: 13, weight: .semibold))
                                     Text(item.mainInventoryNumber)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(AppTheme.mutedInk)
-                                    Text(item.currentPlacement.displayTargetName)
                                         .font(.system(size: 11))
-                                        .foregroundStyle(AppTheme.subtleInk)
+                                        .foregroundStyle(AppTheme.mutedInk)
                                 }
                                 Spacer()
+                                Image(systemName: "plus.circle.fill")
+                                    .foregroundStyle(AppTheme.primary)
                             }
+                            .foregroundStyle(AppTheme.ink)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 10)
                             .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(store.selectedItemIDs.contains(item.id) ? AppTheme.primarySoft : AppTheme.canvas)
+                                RoundedRectangle(cornerRadius: 10).fill(AppTheme.paper)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10).stroke(AppTheme.cardBorder, lineWidth: 1)
                             )
                         }
                         .buttonStyle(.plain)
@@ -193,15 +218,10 @@ struct ExhibitionEditorView: View {
             .foregroundStyle(AppTheme.ink)
     }
 
-    private enum InlineTone {
-        case rejected
-    }
-
-    private func inlineMessage(text: String, tone: InlineTone) -> some View {
+    private func inlineMessage(text: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.circle.fill")
-            Text(text)
-                .font(.system(size: 13))
+            Text(text).font(.system(size: 13))
             Spacer()
         }
         .foregroundStyle(AppTheme.rejectedText)

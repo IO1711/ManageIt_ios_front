@@ -4,37 +4,35 @@ import Observation
 @MainActor
 @Observable
 final class ExhibitionEditorFeatureModel: Identifiable {
-    enum Mode: Equatable {
+    let id = UUID()
+
+    enum EditorMode: Equatable {
         case create
-        case edit(existing: ExhibitionDetailResponse)
+        case edit(original: ExhibitionResponse)
 
         var title: String {
             switch self {
-            case .create:
-                return "New exhibition"
-            case .edit:
-                return "Edit exhibition"
+            case .create: return "New exhibition"
+            case .edit: return "Edit exhibition"
             }
         }
     }
 
-    let id: UUID = UUID()
-
-    var mode: Mode
+    var mode: EditorMode
     var name: String
-    var selectedLocationID: Int64?
+    var selectedLocation: LocationResponse?
+    var availableLocations: [LocationResponse] = []
     var startDate: BusinessDate?
     var endDate: BusinessDate?
-    var locationOptions: [LocationResponse] = []
-    var candidateItems: [ItemResponse] = []
-    var selectedItemIDs: Set<Int64>
-    var itemSearchText: String = ""
-    var isLoadingDependencies: Bool = false
+    var selectedItems: [ExhibitionItemSummary]
+    var itemQuery: String = ""
+    var itemSuggestions: [ItemResponse] = []
     var isSaving: Bool = false
+    var isLoading: Bool = false
     var errorMessage: String?
     var validationMessage: String?
     var saveSucceeded: Bool = false
-    var savedExhibition: ExhibitionDetailResponse?
+    var savedExhibition: ExhibitionResponse?
 
     var storedContext: StoredDeviceContext
 
@@ -51,19 +49,18 @@ final class ExhibitionEditorFeatureModel: Identifiable {
     private let onSessionInvalidated: () -> Void
 
     @ObservationIgnored
-    private let onReminderSourcesChanged: () -> Void
-
-    @ObservationIgnored
     private var authenticated: AuthenticatedAPI
 
+    @ObservationIgnored
+    private var itemSearchTask: Task<Void, Never>?
+
     init(
-        mode: Mode,
+        mode: EditorMode,
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
-        onSessionInvalidated: @escaping () -> Void,
-        onReminderSourcesChanged: @escaping () -> Void
+        onSessionInvalidated: @escaping () -> Void
     ) {
         self.mode = mode
         self.storedContext = storedContext
@@ -71,7 +68,6 @@ final class ExhibitionEditorFeatureModel: Identifiable {
         self.apiClient = apiClient
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
-        self.onReminderSourcesChanged = onReminderSourcesChanged
         self.authenticated = AuthenticatedAPI(
             apiClient: apiClient,
             sessionModel: sessionModel,
@@ -83,81 +79,121 @@ final class ExhibitionEditorFeatureModel: Identifiable {
         switch mode {
         case .create:
             self.name = ""
-            self.selectedLocationID = nil
+            self.selectedItems = []
             self.startDate = .today
             self.endDate = .today
-            self.selectedItemIDs = []
-        case .edit(let existing):
-            self.name = existing.name
-            self.selectedLocationID = existing.location.id
-            self.startDate = existing.startDate
-            self.endDate = existing.endDate
-            self.selectedItemIDs = Set(existing.items.map(\.id))
+        case .edit(let original):
+            self.name = original.name
+            self.selectedItems = original.items ?? []
+            self.startDate = original.startDate
+            self.endDate = original.endDate
         }
     }
 
-    var filteredCandidateItems: [ItemResponse] {
-        let trimmed = itemSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return candidateItems
-        }
-
-        let query = trimmed.lowercased()
-        return candidateItems.filter { item in
-            item.title.lowercased().contains(query)
-                || item.mainInventoryNumber.lowercased().contains(query)
-                || item.currentPlacement.displayTargetName.lowercased().contains(query)
-        }
+    var isEditMode: Bool {
+        if case .edit = mode { return true }
+        return false
     }
 
-    var selectedItems: [ItemResponse] {
-        candidateItems
-            .filter { selectedItemIDs.contains($0.id) }
-            .sorted { lhs, rhs in
-                lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-            }
+    /// True when the chosen date range covers today — in that case every linked
+    /// item must already sit at the exhibition leaf location per architecture
+    /// rules. Surfaces in the UI as a per-item warning and blocks submit.
+    var willBeActive: Bool {
+        guard let start = startDate, let end = endDate else { return false }
+        let today = BusinessDate.today
+        return start <= today && today <= end
     }
 
-    func loadDependenciesIfNeeded() async {
-        guard locationOptions.isEmpty || candidateItems.isEmpty else { return }
+    func itemPlacementWarning(_ item: ExhibitionItemSummary) -> String? {
+        guard willBeActive, let locationId = selectedLocation?.id else { return nil }
+        guard let placement = item.currentPlacement else {
+            return "Current placement unknown — verify before saving."
+        }
+        if placement.presenceType != .internal {
+            return "Currently external — must be returned to \(selectedLocation?.displayPath ?? "exhibition location") before activating."
+        }
+        if placement.location?.id != locationId {
+            let target = selectedLocation?.displayPath ?? "exhibition location"
+            return "Currently at \(placement.displayTargetName) — move it to \(target) before activating."
+        }
+        return nil
+    }
 
-        isLoadingDependencies = true
-        errorMessage = nil
-        defer { isLoadingDependencies = false }
+    var hasPlacementIssues: Bool {
+        guard willBeActive else { return false }
+        return selectedItems.contains(where: { itemPlacementWarning($0) != nil })
+    }
 
+    func loadDependencies() async {
+        isLoading = true
+        defer { isLoading = false }
         do {
-            let locations = try await authenticated.perform { url, token in
-                try await self.apiClient.fetchLocations(
-                    serverURL: url,
-                    accessToken: token,
-                    includeArchived: false
-                )
+            async let locationsTask = authenticated.perform { url, token in
+                try await self.apiClient.fetchLocations(serverURL: url, accessToken: token, includeArchived: false)
             }
-            let items = try await authenticated.perform { url, token in
-                try await self.apiClient.fetchAllItems(
-                    serverURL: url,
-                    accessToken: token,
-                    includeArchived: false,
-                    pageSize: 100
-                )
-            }
+            let locations = try await locationsTask
+            self.availableLocations = locations
 
-            locationOptions = assignableLocations(from: locations)
-            candidateItems = items.filter { !$0.archived }
-                .sorted { lhs, rhs in
-                    lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            // Hydrate the location reference for edit mode now that we know the tree.
+            if case .edit(let original) = mode {
+                if let loc = locations.first(where: { $0.id == original.locationId }) {
+                    self.selectedLocation = loc
                 }
+            }
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
     }
 
-    func toggleItemSelection(_ item: ItemResponse) {
-        if selectedItemIDs.contains(item.id) {
-            selectedItemIDs.remove(item.id)
-        } else {
-            selectedItemIDs.insert(item.id)
+    func selectLocation(_ location: LocationResponse) {
+        selectedLocation = location
+    }
+
+    func searchItems(query: String) {
+        itemQuery = query
+        itemSearchTask?.cancel()
+        itemSearchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let self, !Task.isCancelled else { return }
+            await self.performItemSearch(query: query)
         }
+    }
+
+    private func performItemSearch(query: String) async {
+        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            itemSuggestions = []
+            return
+        }
+        do {
+            var listQuery = InventoryListQuery()
+            listQuery.searchText = query
+            listQuery.size = 10
+            let response = try await authenticated.perform { url, token in
+                try await self.apiClient.fetchItems(serverURL: url, accessToken: token, query: listQuery)
+            }
+            let alreadySelected = Set(selectedItems.map(\.id))
+            self.itemSuggestions = response.items.filter { !alreadySelected.contains($0.id) }
+        } catch {
+            // non-critical
+        }
+    }
+
+    func addItem(_ item: ItemResponse) {
+        guard !selectedItems.contains(where: { $0.id == item.id }) else { return }
+        let summary = ExhibitionItemSummary(
+            id: item.id,
+            mainInventoryNumber: item.mainInventoryNumber,
+            title: item.title,
+            archived: item.archived,
+            currentPlacement: item.currentPlacement
+        )
+        selectedItems.append(summary)
+        itemQuery = ""
+        itemSuggestions = []
+    }
+
+    func removeItem(id: Int64) {
+        selectedItems.removeAll { $0.id == id }
     }
 
     func submit() async {
@@ -165,73 +201,68 @@ final class ExhibitionEditorFeatureModel: Identifiable {
         errorMessage = nil
 
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else {
-            validationMessage = "Exhibition name is required."
+        if trimmedName.isEmpty {
+            validationMessage = "Name is required."
             return
         }
-        guard let locationID = selectedLocationID else {
-            validationMessage = "Choose a leaf exhibition location."
+        guard let location = selectedLocation, location.isAssignable, !location.archived else {
+            validationMessage = "Choose a leaf internal location."
             return
         }
-        guard let startDate else {
+        guard let start = startDate else {
             validationMessage = "Start date is required."
             return
         }
-        guard let endDate else {
+        guard let end = endDate else {
             validationMessage = "End date is required."
             return
         }
-        guard startDate <= endDate else {
-            validationMessage = "The end date must be on or after the start date."
+        guard start <= end else {
+            validationMessage = "Start date must be on or before end date."
             return
         }
-        guard !selectedItemIDs.isEmpty else {
-            validationMessage = "Select at least one item for the exhibition."
+        if selectedItems.isEmpty {
+            validationMessage = "Add at least one item to the exhibition."
             return
         }
+        if willBeActive && hasPlacementIssues {
+            validationMessage = "One or more items are not currently at the exhibition location. Move them first, then save."
+            return
+        }
+
+        let itemIds = selectedItems.map(\.id)
 
         isSaving = true
         defer { isSaving = false }
 
         do {
-            let saved: ExhibitionDetailResponse
+            let result: ExhibitionResponse
             switch mode {
             case .create:
                 let request = ExhibitionCreateRequest(
                     name: trimmedName,
-                    locationId: locationID,
-                    startDate: startDate,
-                    endDate: endDate,
-                    itemIds: Array(selectedItemIDs).sorted()
+                    locationId: location.id,
+                    startDate: start,
+                    endDate: end,
+                    itemIds: itemIds
                 )
-                saved = try await authenticated.perform { url, token in
-                    try await self.apiClient.createExhibition(
-                        serverURL: url,
-                        accessToken: token,
-                        request: request
-                    )
+                result = try await authenticated.perform { url, token in
+                    try await self.apiClient.createExhibition(serverURL: url, accessToken: token, request: request)
                 }
-            case .edit(let existing):
+            case .edit(let original):
                 let request = ExhibitionUpdateRequest(
                     name: trimmedName,
-                    locationId: locationID,
-                    startDate: startDate,
-                    endDate: endDate,
-                    itemIds: Array(selectedItemIDs).sorted()
+                    locationId: location.id,
+                    startDate: start,
+                    endDate: end,
+                    itemIds: itemIds
                 )
-                saved = try await authenticated.perform { url, token in
-                    try await self.apiClient.updateExhibition(
-                        serverURL: url,
-                        accessToken: token,
-                        exhibitionID: existing.id,
-                        request: request
-                    )
+                result = try await authenticated.perform { url, token in
+                    try await self.apiClient.updateExhibition(serverURL: url, accessToken: token, id: original.id, request: request)
                 }
             }
-
-            savedExhibition = saved
+            savedExhibition = result
             saveSucceeded = true
-            onReminderSourcesChanged()
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }

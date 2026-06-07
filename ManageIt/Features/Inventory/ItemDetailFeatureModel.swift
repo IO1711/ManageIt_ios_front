@@ -12,9 +12,9 @@ final class ItemDetailFeatureModel {
     var isArchiving: Bool = false
     var errorMessage: String?
     var historyErrorMessage: String?
-    var offlineStateVersion: Int = 0
 
     var storedContext: StoredDeviceContext
+    var scheduledRentalReminderDate: Date?
 
     @ObservationIgnored
     private let sessionModel: DeviceSessionModel
@@ -23,7 +23,10 @@ final class ItemDetailFeatureModel {
     private let apiClient: ManageItAPIClient
 
     @ObservationIgnored
-    private let offlineMovementStore: OfflineMovementStore
+    let reminderCoordinator: ReminderCoordinator
+
+    @ObservationIgnored
+    let offlineSyncCoordinator: OfflineSyncCoordinator
 
     @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
@@ -38,26 +41,17 @@ final class ItemDetailFeatureModel {
     private let onItemArchived: (ItemResponse) -> Void
 
     @ObservationIgnored
-    private let onReminderSourcesChanged: () -> Void
-
-    @ObservationIgnored
     private var authenticated: AuthenticatedAPI
-
-    @ObservationIgnored
-    private var offlineObserverTask: Task<Void, Never>?
-
-    @ObservationIgnored
-    private var snapshotObserverTask: Task<Void, Never>?
 
     init(
         itemID: Int64,
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
-        offlineMovementStore: OfflineMovementStore,
+        reminderCoordinator: ReminderCoordinator,
+        offlineSyncCoordinator: OfflineSyncCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void,
-        onReminderSourcesChanged: @escaping () -> Void,
         onItemUpdated: @escaping (ItemResponse) -> Void,
         onItemArchived: @escaping (ItemResponse) -> Void
     ) {
@@ -65,10 +59,10 @@ final class ItemDetailFeatureModel {
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
-        self.offlineMovementStore = offlineMovementStore
+        self.reminderCoordinator = reminderCoordinator
+        self.offlineSyncCoordinator = offlineSyncCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
-        self.onReminderSourcesChanged = onReminderSourcesChanged
         self.onItemUpdated = onItemUpdated
         self.onItemArchived = onItemArchived
 
@@ -79,68 +73,9 @@ final class ItemDetailFeatureModel {
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated
         )
-
-        self.offlineObserverTask = Task { [weak self] in
-            for await _ in NotificationCenter.default.notifications(named: .offlineMovementStoreDidChange) {
-                guard let self else { return }
-                self.offlineStateVersion += 1
-            }
-        }
-
-        self.snapshotObserverTask = Task { [weak self] in
-            for await notification in NotificationCenter.default.notifications(named: .offlineMovementServerSnapshotDidChange) {
-                guard let self else { return }
-                let changedItemID: Int64?
-                if let item = notification.userInfo?[OfflineMovementNotificationKey.item] as? ItemResponse {
-                    changedItemID = item.id
-                } else if let rawID = notification.userInfo?[OfflineMovementNotificationKey.itemId] as? NSNumber {
-                    changedItemID = rawID.int64Value
-                } else {
-                    changedItemID = notification.userInfo?[OfflineMovementNotificationKey.itemId] as? Int64
-                }
-
-                guard changedItemID == self.itemID else {
-                    continue
-                }
-
-                if let item = notification.userInfo?[OfflineMovementNotificationKey.item] as? ItemResponse {
-                    self.item = item
-                    self.onItemUpdated(item)
-                }
-                if let history = notification.userInfo?[OfflineMovementNotificationKey.history] as? [ItemHistoryEntry] {
-                    self.historyEntries = history
-                }
-                self.offlineStateVersion += 1
-            }
-        }
-    }
-
-    deinit {
-        offlineObserverTask?.cancel()
-        snapshotObserverTask?.cancel()
     }
 
     var role: DeviceRole { sessionModel.activeSession?.context.role ?? storedContext.role }
-
-    var displayedItem: ItemResponse? {
-        _ = offlineStateVersion
-        guard let item else { return nil }
-        return offlineMovementStore.applyOverlay(to: item)
-    }
-
-    var displayedHistoryEntries: [ItemHistoryEntry] {
-        _ = offlineStateVersion
-        return offlineMovementStore.applyOverlay(to: historyEntries, itemId: itemID)
-    }
-
-    var offlineStatusPresentation: OfflineMovementStatusPresentation? {
-        _ = offlineStateVersion
-        return offlineMovementStore.statusPresentation(for: itemID)
-    }
-
-    func dismissRejectedOfflineMovement() {
-        offlineMovementStore.dismissRejectedEntry(for: itemID)
-    }
 
     func load() async {
         isLoading = true
@@ -150,11 +85,15 @@ final class ItemDetailFeatureModel {
             let result = try await authenticated.perform { url, token in
                 try await self.apiClient.fetchItem(serverURL: url, accessToken: token, itemID: self.itemID)
             }
-            self.item = result
+            self.item = offlineSyncCoordinator.overlay(result)
             await loadHistory()
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
+    }
+
+    var queuedOfflineEntry: OfflineMovementEntry? {
+        offlineSyncCoordinator.entry(for: itemID)
     }
 
     func reload() async {
@@ -166,13 +105,41 @@ final class ItemDetailFeatureModel {
         historyErrorMessage = nil
         defer { isLoadingHistory = false }
         do {
-            let entries = try await authenticated.perform { url, token in
+            var entries = try await authenticated.perform { url, token in
                 try await self.apiClient.fetchItemHistory(serverURL: url, accessToken: token, itemID: self.itemID)
             }
+            // Prepend a synthetic entry for any outstanding queued offline move
+            // so the user sees the pending row immediately while offline.
+            if let entry = offlineSyncCoordinator.entry(for: itemID), entry.status != .rejected {
+                let pending = offlineSyncCoordinator.optimisticHistoryEntry(for: entry)
+                entries.insert(pending, at: 0)
+            }
             self.historyEntries = entries
+            await syncRentalReminderFromCurrentData()
         } catch {
             historyErrorMessage = AuthenticatedAPI.userFacing(error)
         }
+    }
+
+    func discardQueuedEntry() {
+        guard let entry = queuedOfflineEntry else { return }
+        offlineSyncCoordinator.discard(entryId: entry.id)
+        Task { await load() }
+    }
+
+    private func syncRentalReminderFromCurrentData() async {
+        guard let item else {
+            await reminderCoordinator.syncRentalReminder(itemId: itemID, itemTitle: "Item", openRental: nil)
+            scheduledRentalReminderDate = nil
+            return
+        }
+        let openExternal = historyEntries.first(where: { $0.isOpen && $0.presenceType == .external })
+        await reminderCoordinator.syncRentalReminder(
+            itemId: itemID,
+            itemTitle: item.title,
+            openRental: openExternal
+        )
+        scheduledRentalReminderDate = await reminderCoordinator.scheduledRentalReminderDate(for: itemID)
     }
 
     func archiveItem() async {
@@ -185,7 +152,8 @@ final class ItemDetailFeatureModel {
             }
             self.item = archived
             self.onItemArchived(archived)
-            onReminderSourcesChanged()
+            reminderCoordinator.cancelRentalReminder(for: itemID)
+            scheduledRentalReminderDate = nil
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
@@ -194,6 +162,7 @@ final class ItemDetailFeatureModel {
     func applyUpdatedItem(_ updated: ItemResponse) {
         self.item = updated
         onItemUpdated(updated)
+        Task { await self.syncRentalReminderFromCurrentData() }
     }
 
     // MARK: - Child models
@@ -224,16 +193,15 @@ final class ItemDetailFeatureModel {
     }
 
     func makeMovementModel() -> MovementFeatureModel? {
-        guard let item = displayedItem else { return nil }
+        guard let item else { return nil }
         return MovementFeatureModel(
-            currentItem: item,
+            item: item,
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
-            offlineMovementStore: offlineMovementStore,
+            offlineSyncCoordinator: offlineSyncCoordinator,
             onContextUpdated: onContextUpdated,
-            onSessionInvalidated: onSessionInvalidated,
-            onReminderSourcesChanged: onReminderSourcesChanged
+            onSessionInvalidated: onSessionInvalidated
         )
     }
 
@@ -243,7 +211,6 @@ final class ItemDetailFeatureModel {
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
-            offlineMovementStore: offlineMovementStore,
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated
         )

@@ -1,9 +1,8 @@
 import SwiftUI
+import UserNotifications
 
 struct ContentView: View {
     let appModel: AppModel
-
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -47,16 +46,6 @@ struct ContentView: View {
         .background(AppTheme.canvas.ignoresSafeArea())
         .task {
             appModel.bootIfNeeded()
-        }
-        .task(id: appModel.appPhase) {
-            if appModel.appPhase == .active {
-                await appModel.syncLocalState()
-            }
-        }
-        .onChange(of: scenePhase) { _, newValue in
-            if newValue == .active {
-                Task { await appModel.syncLocalState() }
-            }
         }
     }
 }
@@ -183,11 +172,14 @@ struct AuthenticatedRootView: View {
             }
             .tag(Tab.inventory)
 
-            ExhibitionsStackView(exhibitionsModel: exhibitionsModel)
-                .tabItem {
-                    Label("Exhibitions", systemImage: "sparkles.rectangle.stack.fill")
-                }
-                .tag(Tab.exhibitions)
+            ExhibitionsStackView(
+                exhibitionsModel: exhibitionsModel,
+                context: context
+            )
+            .tabItem {
+                Label("Exhibitions", systemImage: "rectangle.stack.fill")
+            }
+            .tag(Tab.exhibitions)
 
             if context.role.isAdmin {
                 NavigationStack {
@@ -208,6 +200,127 @@ struct AuthenticatedRootView: View {
             .tag(Tab.account)
         }
         .tint(AppTheme.primary)
+    }
+}
+
+// MARK: - Exhibitions stack
+
+struct ExhibitionsStackView: View {
+    @Bindable var exhibitionsModel: ExhibitionsFeatureModel
+    let context: StoredDeviceContext
+
+    @State private var path: [ExhibitionRoute] = []
+    @State private var createModel: ExhibitionEditorFeatureModel?
+
+    enum ExhibitionRoute: Hashable {
+        case detail(Int64)
+        case edit(Int64)
+    }
+
+    var body: some View {
+        NavigationStack(path: $path) {
+            ExhibitionsFeatureView(
+                store: exhibitionsModel,
+                onSelectExhibition: { id in path.append(.detail(id)) },
+                onCreateExhibition: {
+                    createModel = exhibitionsModel.makeCreateEditorModel()
+                }
+            )
+            .navigationTitle("Exhibitions")
+            .navigationBarTitleDisplayMode(.large)
+            .navigationDestination(for: ExhibitionRoute.self) { route in
+                destinationView(for: route)
+            }
+        }
+        .sheet(item: $createModel) { model in
+            NavigationStack {
+                ExhibitionEditorView(
+                    store: model,
+                    onCompleted: { _ in
+                        createModel = nil
+                        Task { await exhibitionsModel.load() }
+                    },
+                    onCancel: { createModel = nil }
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func destinationView(for route: ExhibitionRoute) -> some View {
+        switch route {
+        case .detail(let id):
+            let detailModel = exhibitionsModel.makeDetailModel(for: id)
+            ExhibitionDetailHost(
+                detailModel: detailModel,
+                onEdit: { path.append(.edit(id)) }
+            )
+        case .edit(let id):
+            ExhibitionEditWrapper(
+                exhibitionsModel: exhibitionsModel,
+                exhibitionID: id,
+                onCompleted: { _ in path.removeLast() },
+                onCancel: { path.removeLast() }
+            )
+        }
+    }
+}
+
+private struct ExhibitionDetailHost: View {
+    @Bindable var detailModel: ExhibitionDetailFeatureModel
+    let onEdit: () -> Void
+
+    var body: some View {
+        ExhibitionDetailView(store: detailModel, onEdit: onEdit)
+    }
+}
+
+private struct ExhibitionEditWrapper: View {
+    let exhibitionsModel: ExhibitionsFeatureModel
+    let exhibitionID: Int64
+    let onCompleted: (ExhibitionResponse) -> Void
+    let onCancel: () -> Void
+
+    @State private var editorModel: ExhibitionEditorFeatureModel?
+    @State private var loadingError: String?
+
+    var body: some View {
+        Group {
+            if let editorModel {
+                ExhibitionEditorView(
+                    store: editorModel,
+                    onCompleted: { exhibition in
+                        exhibitionsModel.replaceExhibition(exhibition)
+                        onCompleted(exhibition)
+                    },
+                    onCancel: onCancel
+                )
+            } else if let loadingError {
+                VStack(spacing: 14) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 30))
+                        .foregroundStyle(AppTheme.rejectedText)
+                    Text(loadingError)
+                        .font(.system(size: 14))
+                        .foregroundStyle(AppTheme.mutedInk)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(40)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(AppTheme.canvas)
+            } else {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .task {
+            let detail = exhibitionsModel.makeDetailModel(for: exhibitionID)
+            await detail.load()
+            if let model = detail.makeEditorModel() {
+                self.editorModel = model
+            } else {
+                self.loadingError = detail.errorMessage ?? "Could not load exhibition."
+            }
+        }
     }
 }
 
@@ -295,47 +408,6 @@ struct InventoryStackView: View {
                 inventoryModel: inventoryModel,
                 itemID: id
             )
-        }
-    }
-}
-
-// MARK: - Exhibition stack
-
-struct ExhibitionsStackView: View {
-    let exhibitionsModel: ExhibitionsFeatureModel
-
-    @State private var path: [Int64] = []
-    @State private var createModel: ExhibitionEditorFeatureModel?
-
-    var body: some View {
-        NavigationStack(path: $path) {
-            ExhibitionsFeatureView(
-                store: exhibitionsModel,
-                onSelectExhibition: { path.append($0) },
-                onCreateExhibition: {
-                    createModel = exhibitionsModel.makeCreateModel()
-                }
-            )
-            .navigationTitle("Exhibitions")
-            .navigationBarTitleDisplayMode(.large)
-            .navigationDestination(for: Int64.self) { exhibitionID in
-                ExhibitionDetailWrapper(
-                    exhibitionsModel: exhibitionsModel,
-                    exhibitionID: exhibitionID
-                )
-            }
-        }
-        .sheet(item: $createModel) { model in
-            NavigationStack {
-                ExhibitionEditorView(
-                    store: model,
-                    onCompleted: { exhibition in
-                        exhibitionsModel.upsertSummary(from: exhibition)
-                        createModel = nil
-                    },
-                    onCancel: { createModel = nil }
-                )
-            }
         }
     }
 }
@@ -465,11 +537,6 @@ private struct MovementWrapper: View {
             }
         }
         .task {
-            if let item = inventoryModel.itemSnapshot(id: itemID) {
-                self.movementModel = inventoryModel.makeMovementModel(for: item)
-                return
-            }
-
             let detail = inventoryModel.makeDetailModel(for: itemID)
             await detail.load()
             if let model = detail.makeMovementModel() {
@@ -496,48 +563,8 @@ private struct HistoryWrapper: View {
             }
         }
         .task {
-            self.historyModel = inventoryModel.makeHistoryModel(for: itemID)
-        }
-    }
-}
-
-private struct ExhibitionDetailWrapper: View {
-    let exhibitionsModel: ExhibitionsFeatureModel
-    let exhibitionID: Int64
-
-    @State private var detailModel: ExhibitionDetailFeatureModel?
-    @State private var editingModel: ExhibitionEditorFeatureModel?
-
-    var body: some View {
-        Group {
-            if let detailModel {
-                ExhibitionDetailView(
-                    store: detailModel,
-                    onEdit: {
-                        editingModel = detailModel.makeEditorModel()
-                    }
-                )
-            } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .task {
-            if detailModel == nil {
-                detailModel = exhibitionsModel.makeDetailModel(for: exhibitionID)
-            }
-        }
-        .sheet(item: $editingModel) { model in
-            NavigationStack {
-                ExhibitionEditorView(
-                    store: model,
-                    onCompleted: { exhibition in
-                        detailModel?.applyUpdatedExhibition(exhibition)
-                        exhibitionsModel.upsertSummary(from: exhibition)
-                        editingModel = nil
-                    },
-                    onCancel: { editingModel = nil }
-                )
-            }
+            let detail = inventoryModel.makeDetailModel(for: itemID)
+            self.historyModel = detail.makeHistoryModel()
         }
     }
 }
@@ -566,6 +593,21 @@ private struct ContentUnavailable: View {
 struct AccountView: View {
     let appModel: AppModel
     let context: StoredDeviceContext
+
+    @Bindable private var coordinator: ReminderCoordinator
+    @Bindable private var offlineSync: OfflineSyncCoordinator
+    @State private var isReplayingNow = false
+
+    #if DEBUG
+    @State private var simulateOffline = DemoAPIProtocol.simulateOffline
+    #endif
+
+    init(appModel: AppModel, context: StoredDeviceContext) {
+        self.appModel = appModel
+        self.context = context
+        self._coordinator = Bindable(appModel.reminderCoordinator)
+        self._offlineSync = Bindable(appModel.offlineSyncCoordinator)
+    }
 
     var body: some View {
         ScrollView {
@@ -603,6 +645,12 @@ struct AccountView: View {
                 }
                 .museumPanel()
 
+                remindersSection
+                offlineSyncSection
+                #if DEBUG
+                debugSimulateOfflineSection
+                #endif
+
                 Button {
                     Task { await appModel.logoutCurrentDevice() }
                 } label: {
@@ -615,6 +663,64 @@ struct AccountView: View {
         .background(AppTheme.canvas.ignoresSafeArea())
         .navigationTitle("Account")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await coordinator.refreshPermissionStatus()
+        }
+    }
+
+    private var remindersSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Local reminders")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(AppTheme.ink)
+
+            HStack {
+                Image(systemName: "bell.fill")
+                    .foregroundStyle(coordinator.isAuthorized ? AppTheme.primary : AppTheme.mutedInk)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Notification status")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(AppTheme.mutedInk)
+                    Text(coordinator.permissionStatus.humanReadable)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(AppTheme.ink)
+                }
+                Spacer()
+            }
+
+            Text("Exhibition end reminders fire on the end date. Rental return reminders fire 3 calendar days before the expected return date. Both are scheduled locally on this iPhone.")
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.mutedInk)
+
+            HStack(spacing: 10) {
+                switch coordinator.permissionStatus {
+                case .notDetermined:
+                    Button {
+                        Task { await coordinator.requestPermission() }
+                    } label: {
+                        Label("Allow notifications", systemImage: "bell.badge.fill")
+                    }
+                    .buttonStyle(PrimaryButtonStyle())
+                case .denied:
+                    Button {
+                        if let url = URL(string: UIApplication.openSettingsURLString) {
+                            UIApplication.shared.open(url)
+                        }
+                    } label: {
+                        Label("Open iOS Settings", systemImage: "gear")
+                    }
+                    .buttonStyle(SoftButtonStyle())
+                case .authorized, .provisional, .ephemeral:
+                    Label("Reminders are active", systemImage: "checkmark.seal.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(AppTheme.approvedText)
+                @unknown default:
+                    EmptyView()
+                }
+                Spacer()
+            }
+        }
+        .museumPanel()
     }
 
     private func detailRow(_ label: String, _ value: String) -> some View {
@@ -628,6 +734,118 @@ struct AccountView: View {
                 .foregroundStyle(AppTheme.ink)
         }
     }
+
+    // MARK: - Offline sync section
+
+    private var offlineSyncSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Offline movement sync")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(AppTheme.ink)
+
+            HStack(spacing: 12) {
+                Image(systemName: offlineSync.hasQueuedMoves ? "tray.and.arrow.up.fill" : "checkmark.seal.fill")
+                    .foregroundStyle(offlineSync.hasQueuedMoves ? AppTheme.plannedText : AppTheme.approvedText)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("\(offlineSync.queuedEntries.count) queued · \(offlineSync.rejectedEntries.count) rejected")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(AppTheme.ink)
+                    if let last = offlineSync.lastReplaySummary, let when = offlineSync.lastReplayAt {
+                        Text("Last replay: \(when.formatted(date: .omitted, time: .shortened)) — \(last)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(AppTheme.mutedInk)
+                    } else {
+                        Text("Movements made while offline are queued here and replayed on next sync.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(AppTheme.mutedInk)
+                    }
+                }
+                Spacer()
+            }
+
+            Button {
+                Task {
+                    isReplayingNow = true
+                    _ = await offlineSync.replay()
+                    isReplayingNow = false
+                }
+            } label: {
+                if isReplayingNow || offlineSync.isReplaying {
+                    ProgressView().tint(.white)
+                } else {
+                    Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle())
+            .disabled(offlineSync.isReplaying)
+
+            if !offlineSync.rejectedEntries.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Rejected entries")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(AppTheme.rejectedText)
+                    ForEach(offlineSync.rejectedEntries) { entry in
+                        rejectedEntryRow(entry: entry)
+                    }
+                }
+            }
+        }
+        .museumPanel()
+    }
+
+    private func rejectedEntryRow(entry: OfflineMovementEntry) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.octagon.fill")
+                .foregroundStyle(AppTheme.rejectedText)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Item #\(entry.itemId) — \(entry.optimisticItem.title)")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(AppTheme.ink)
+                if let lastError = entry.lastError {
+                    Text(lastError)
+                        .font(.system(size: 11))
+                        .foregroundStyle(AppTheme.mutedInk)
+                }
+            }
+            Spacer()
+            Button {
+                offlineSync.discard(entryId: entry.id)
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundStyle(AppTheme.rejectedText)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(AppTheme.rejectedBg))
+    }
+
+    #if DEBUG
+    private var debugSimulateOfflineSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "wifi.slash")
+                    .foregroundStyle(AppTheme.mutedInk)
+                Text("Debug: simulate offline")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(AppTheme.ink)
+            }
+            Toggle(isOn: $simulateOffline) {
+                Text("Force movement POSTs to fail")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AppTheme.mutedInk)
+            }
+            .tint(AppTheme.primary)
+            .onChange(of: simulateOffline) { _, newValue in
+                DemoAPIProtocol.simulateOffline = newValue
+            }
+            Text("Affects only the demo backend. Use it to test the offline outbox flow: create a move and it will be queued instead of saved.")
+                .font(.system(size: 11))
+                .foregroundStyle(AppTheme.mutedInk)
+        }
+        .museumPanel()
+    }
+    #endif
 }
 
 #Preview {

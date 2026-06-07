@@ -4,11 +4,10 @@ import Observation
 @MainActor
 @Observable
 final class MovementFeatureModel {
-    let itemID: Int64
-    let currentItem: ItemResponse
-
+    let item: ItemResponse
+    var itemID: Int64 { item.id }
     var mode: MovementEntryMode
-    var selectedLocationID: Int64?
+    var selectedLocation: LocationResponse?
     var availableLocations: [LocationResponse] = []
     var selectedOrganization: OrganizationResponse?
     var organizationQuery: String = ""
@@ -21,7 +20,9 @@ final class MovementFeatureModel {
     var validationMessage: String?
     var saveSucceeded: Bool = false
     var savedItem: ItemResponse?
-    var isUsingCachedLocations: Bool = false
+    /// True when the submit hit a network error and the move was queued
+    /// locally instead of going to the server.
+    var queuedOffline: Bool = false
 
     var storedContext: StoredDeviceContext
 
@@ -32,7 +33,7 @@ final class MovementFeatureModel {
     private let apiClient: ManageItAPIClient
 
     @ObservationIgnored
-    private let offlineMovementStore: OfflineMovementStore
+    let offlineSyncCoordinator: OfflineSyncCoordinator
 
     @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
@@ -41,34 +42,28 @@ final class MovementFeatureModel {
     private let onSessionInvalidated: () -> Void
 
     @ObservationIgnored
-    private let onReminderSourcesChanged: () -> Void
-
-    @ObservationIgnored
     private var authenticated: AuthenticatedAPI
 
     @ObservationIgnored
     private var orgSearchTask: Task<Void, Never>?
 
     init(
-        currentItem: ItemResponse,
+        item: ItemResponse,
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
-        offlineMovementStore: OfflineMovementStore,
+        offlineSyncCoordinator: OfflineSyncCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
-        onSessionInvalidated: @escaping () -> Void,
-        onReminderSourcesChanged: @escaping () -> Void
+        onSessionInvalidated: @escaping () -> Void
     ) {
-        self.itemID = currentItem.id
-        self.currentItem = currentItem
-        self.mode = currentItem.currentPlacement.presenceType == .external ? .returnToInternal : .internalMove
+        self.item = item
+        self.mode = item.currentPlacement.presenceType == .external ? .returnToInternal : .internalMove
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
-        self.offlineMovementStore = offlineMovementStore
+        self.offlineSyncCoordinator = offlineSyncCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
-        self.onReminderSourcesChanged = onReminderSourcesChanged
         self.authenticated = AuthenticatedAPI(
             apiClient: apiClient,
             sessionModel: sessionModel,
@@ -78,54 +73,36 @@ final class MovementFeatureModel {
         )
     }
 
-    var offlineGuidanceMessage: String? {
-        guard isUsingCachedLocations else { return nil }
-        return "Using the last cached location hierarchy. Eligible moves will queue on this iPhone until the museum server is reachable again."
+    var isOfflineEligibleForCurrentMode: Bool {
+        offlineSyncCoordinator.isEligible(mode: mode, item: item)
     }
 
-    var offlineExternalGuidanceMessage: String? {
-        guard mode == .externalRental, isUsingCachedLocations else { return nil }
-        guard let promised = currentItem.planning.promisedOrganization else {
-            return "Offline send-to-external is unavailable because this item has no synced planned organization yet."
+    /// External items can only return; internal items can either move
+    /// internally or be sent out. Prevents architecturally invalid
+    /// external → external transitions in the UI.
+    var allowedModes: [MovementEntryMode] {
+        if item.currentPlacement.presenceType == .external {
+            return [.returnToInternal]
         }
-        return "Offline send-to-external uses the synced planned organization: \(promised.name)."
-    }
-
-    var usesOfflinePlannedOrganizationOnly: Bool {
-        mode == .externalRental && isUsingCachedLocations
+        return [.internalMove, .externalRental]
     }
 
     func loadDependencies() async {
         isLoading = true
-        errorMessage = nil
         defer { isLoading = false }
-
         do {
             let locations = try await authenticated.perform { url, token in
                 try await self.apiClient.fetchLocations(serverURL: url, accessToken: token, includeArchived: false)
             }
-            offlineMovementStore.updateCachedLocations(locations)
-            availableLocations = assignableLocations(from: locations)
-            isUsingCachedLocations = false
+            self.availableLocations = locations
+            offlineSyncCoordinator.updateLocationCache(locations)
         } catch let error as ManageItError {
-            if error.isTransportFailure {
-                let cachedLocations = offlineMovementStore.cachedAssignableLocations()
-                if !cachedLocations.isEmpty {
-                    availableLocations = cachedLocations
-                    isUsingCachedLocations = true
-                    prepareOfflineOrganizationIfNeeded()
-                    return
-                }
-
-                errorMessage = """
-                \(AuthenticatedAPI.userFacing(error))
-
-                No cached location hierarchy is available on this iPhone yet, so offline movement cannot start.
-                """
-                return
+            if case .transportFailure = error, !offlineSyncCoordinator.cachedLocations.isEmpty {
+                // Fall back to cached hierarchy so user can still queue offline.
+                self.availableLocations = offlineSyncCoordinator.cachedLocations
+            } else {
+                errorMessage = AuthenticatedAPI.userFacing(error)
             }
-
-            errorMessage = AuthenticatedAPI.userFacing(error)
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
@@ -139,19 +116,16 @@ final class MovementFeatureModel {
             organizationSuggestions = []
             expectedReturnDate = nil
         } else {
-            selectedLocationID = nil
-            prepareOfflineOrganizationIfNeeded()
+            selectedLocation = nil
         }
+    }
+
+    func selectLocation(_ location: LocationResponse) {
+        selectedLocation = location
     }
 
     func searchOrganizations(query: String) {
         organizationQuery = query
-
-        if usesOfflinePlannedOrganizationOnly {
-            organizationSuggestions = []
-            return
-        }
-
         orgSearchTask?.cancel()
         orgSearchTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
@@ -169,9 +143,9 @@ final class MovementFeatureModel {
             let results = try await authenticated.perform { url, token in
                 try await self.apiClient.fetchOrganizations(serverURL: url, accessToken: token, query: query, includeArchived: false)
             }
-            organizationSuggestions = results
+            self.organizationSuggestions = results
         } catch {
-            // Keep the last successful suggestions instead of surfacing noisy transient errors.
+            // ignore
         }
     }
 
@@ -182,11 +156,6 @@ final class MovementFeatureModel {
     }
 
     func createOrganization(name: String) async {
-        if usesOfflinePlannedOrganizationOnly {
-            errorMessage = "Offline send-to-external cannot create or search organizations. Use the synced planned organization once connectivity returns."
-            return
-        }
-
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         do {
@@ -214,20 +183,16 @@ final class MovementFeatureModel {
 
         switch mode {
         case .internalMove, .returnToInternal:
-            guard let locationID = selectedLocationID else {
-                validationMessage = "Choose a destination location."
+            guard let location = selectedLocation, location.isAssignable, !location.archived else {
+                validationMessage = "Choose a destination leaf location."
                 return
             }
             presenceType = .internal
-            locationId = locationID
+            locationId = location.id
             organization = nil
         case .externalRental:
-            if usesOfflinePlannedOrganizationOnly && currentItem.planning.promisedOrganization == nil {
-                validationMessage = "Offline send-to-external is allowed only when this item already has synced planning data."
-                return
-            }
             guard let selectedOrg = selectedOrganization else {
-                validationMessage = "Choose the receiving organization."
+                validationMessage = "Choose or create the receiving organization."
                 return
             }
             presenceType = .external
@@ -253,44 +218,23 @@ final class MovementFeatureModel {
             }
             savedItem = updated
             saveSucceeded = true
-            onReminderSourcesChanged()
         } catch let error as ManageItError {
-            if error.isTransportFailure {
-                do {
-                    try offlineMovementStore.queueOfflineMovement(
-                        item: currentItem,
-                        request: request,
-                        storedContext: authenticated.currentContext(),
-                        availableLocations: availableLocations
-                    )
-                    savedItem = currentItem
+            if case .transportFailure = error, isOfflineEligibleForCurrentMode {
+                switch offlineSyncCoordinator.queueMovement(item: item, mode: mode, request: request) {
+                case .success(let entry):
+                    savedItem = entry.optimisticItem
                     saveSucceeded = true
-                    return
-                } catch {
-                    errorMessage = AuthenticatedAPI.userFacing(error)
-                    return
+                    queuedOffline = true
+                case .alreadyQueued:
+                    errorMessage = "This item already has a queued offline movement. Sync or discard it before queuing another."
+                case .ineligibleExternal:
+                    errorMessage = "Send-to-external is only allowed offline when planning data is already synced."
                 }
+            } else {
+                errorMessage = AuthenticatedAPI.userFacing(error)
             }
-
-            errorMessage = AuthenticatedAPI.userFacing(error)
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
-        }
-    }
-
-    private func prepareOfflineOrganizationIfNeeded() {
-        guard usesOfflinePlannedOrganizationOnly else { return }
-        organizationQuery = ""
-        organizationSuggestions = []
-
-        if let promised = currentItem.planning.promisedOrganization {
-            selectedOrganization = OrganizationResponse(
-                id: promised.id,
-                name: promised.name,
-                archived: false
-            )
-        } else {
-            selectedOrganization = nil
         }
     }
 }

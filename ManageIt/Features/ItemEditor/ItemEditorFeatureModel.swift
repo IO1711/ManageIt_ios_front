@@ -27,7 +27,7 @@ final class ItemEditorFeatureModel: Identifiable {
     var authorQuery: String = ""
     var authorSuggestions: [AuthorResponse] = []
     var availableLocations: [LocationResponse] = []
-    var initialLocationID: Int64?
+    var selectedInitialLocation: LocationResponse?
     var moveInDate: BusinessDate?
     var isSaving: Bool = false
     var isCheckingConflict: Bool = false
@@ -106,10 +106,20 @@ final class ItemEditorFeatureModel: Identifiable {
             let locations = try await authenticated.perform { url, token in
                 try await self.apiClient.fetchLocations(serverURL: url, accessToken: token, includeArchived: false)
             }
-            self.availableLocations = assignableLocations(from: locations)
+            self.availableLocations = locations
+        } catch let error as ManageItError {
+            if case .transportFailure = error {
+                errorMessage = "Offline. Online connection is required to create new items because they must be registered on the server."
+            } else {
+                errorMessage = AuthenticatedAPI.userFacing(error)
+            }
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
+    }
+
+    func selectInitialLocation(_ location: LocationResponse) {
+        selectedInitialLocation = location
     }
 
     func searchAuthors(query: String) {
@@ -266,8 +276,8 @@ final class ItemEditorFeatureModel: Identifiable {
 
         switch mode {
         case .create:
-            guard let locationID = initialLocationID else {
-                validationMessage = "Choose an initial internal location."
+            guard let location = selectedInitialLocation, location.isAssignable, !location.archived else {
+                validationMessage = "Choose an initial internal leaf location."
                 throw ManageItError.validationError(validationMessage!)
             }
             guard let date = moveInDate else {
@@ -279,7 +289,7 @@ final class ItemEditorFeatureModel: Identifiable {
                 title: trimmedTitle,
                 secondaryInventoryNumbers: secondaryInventoryNumbers,
                 authors: authors,
-                initialLocationId: locationID,
+                initialLocationId: location.id,
                 moveInDate: date
             )
             return .create(request)

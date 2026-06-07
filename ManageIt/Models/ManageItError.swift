@@ -32,8 +32,19 @@ enum ManageItError: LocalizedError {
             Request: \(endpoint)
             Underlying error: \(details)
             """
-        case .backend(_, let message):
-            return message
+        case let .backend(code, message):
+            switch code {
+            case "ITEM_EXHIBITION_OVERLAP":
+                return "One or more items already belong to another exhibition in an overlapping period. Adjust the dates or remove the conflicting items."
+            case "ITEM_NOT_AT_EXHIBITION_LOCATION":
+                return "One or more items are not currently at the exhibition location. Move them there first, then try again."
+            case "NON_LEAF_LOCATION":
+                return "Items and exhibitions can only reference leaf locations. Pick a child node."
+            case "STALE_OFFLINE_MOVEMENT":
+                return "The queued offline movement no longer matches the server's current item state and was rejected."
+            default:
+                return message
+            }
         case .deviceIdentityUnavailable:
             return "The iPhone could not create or read its stable installation identity from Keychain."
         case .secureStorageFailed:
@@ -45,12 +56,5 @@ enum ManageItError: LocalizedError {
         case .validationError(let message):
             return message
         }
-    }
-
-    var isTransportFailure: Bool {
-        if case .transportFailure = self {
-            return true
-        }
-        return false
     }
 }

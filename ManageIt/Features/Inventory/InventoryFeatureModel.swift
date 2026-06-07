@@ -12,7 +12,6 @@ final class InventoryFeatureModel {
     var hasLoadedOnce: Bool = false
     var totalItems: Int64 = 0
     var totalPages: Int = 0
-    var offlineStateVersion: Int = 0
 
     var storedContext: StoredDeviceContext
 
@@ -26,7 +25,10 @@ final class InventoryFeatureModel {
     private let preferences: AppPreferences
 
     @ObservationIgnored
-    private let offlineMovementStore: OfflineMovementStore
+    let reminderCoordinator: ReminderCoordinator
+
+    @ObservationIgnored
+    let offlineSyncCoordinator: OfflineSyncCoordinator
 
     @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
@@ -35,38 +37,29 @@ final class InventoryFeatureModel {
     private let onSessionInvalidated: () -> Void
 
     @ObservationIgnored
-    private let onReminderSourcesChanged: () -> Void
-
-    @ObservationIgnored
     private var authenticated: AuthenticatedAPI
 
     @ObservationIgnored
     private var searchDebounceTask: Task<Void, Never>?
-
-    @ObservationIgnored
-    private var offlineObserverTask: Task<Void, Never>?
-
-    @ObservationIgnored
-    private var snapshotObserverTask: Task<Void, Never>?
 
     init(
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
         preferences: AppPreferences,
-        offlineMovementStore: OfflineMovementStore,
+        reminderCoordinator: ReminderCoordinator,
+        offlineSyncCoordinator: OfflineSyncCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
-        onSessionInvalidated: @escaping () -> Void,
-        onReminderSourcesChanged: @escaping () -> Void
+        onSessionInvalidated: @escaping () -> Void
     ) {
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
         self.preferences = preferences
-        self.offlineMovementStore = offlineMovementStore
+        self.reminderCoordinator = reminderCoordinator
+        self.offlineSyncCoordinator = offlineSyncCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
-        self.onReminderSourcesChanged = onReminderSourcesChanged
 
         var query = InventoryListQuery()
         query.searchText = preferences.loadLastInventoryQuery()
@@ -81,28 +74,6 @@ final class InventoryFeatureModel {
             },
             onSessionInvalidated: onSessionInvalidated
         )
-
-        self.offlineObserverTask = Task { [weak self] in
-            for await _ in NotificationCenter.default.notifications(named: .offlineMovementStoreDidChange) {
-                guard let self else { return }
-                self.offlineStateVersion += 1
-            }
-        }
-
-        self.snapshotObserverTask = Task { [weak self] in
-            for await notification in NotificationCenter.default.notifications(named: .offlineMovementServerSnapshotDidChange) {
-                guard let self else { return }
-                if let item = notification.userInfo?[OfflineMovementNotificationKey.item] as? ItemResponse {
-                    self.replaceItem(item)
-                }
-                self.offlineStateVersion += 1
-            }
-        }
-    }
-
-    deinit {
-        offlineObserverTask?.cancel()
-        snapshotObserverTask?.cancel()
     }
 
     func updateStoredContext(_ context: StoredDeviceContext) {
@@ -117,11 +88,6 @@ final class InventoryFeatureModel {
     }
 
     var role: DeviceRole { storedContext.role }
-
-    var visibleItems: [ItemResponse] {
-        _ = offlineStateVersion
-        return items.map { offlineMovementStore.applyOverlay(to: $0) }
-    }
 
     func loadFirstPage() async {
         query.page = 0
@@ -170,15 +136,6 @@ final class InventoryFeatureModel {
         items.removeAll { $0.id == id }
     }
 
-    func itemSnapshot(id: Int64) -> ItemResponse? {
-        visibleItems.first(where: { $0.id == id })
-    }
-
-    func offlineStatusPresentation(for itemId: Int64) -> OfflineMovementStatusPresentation? {
-        _ = offlineStateVersion
-        return offlineMovementStore.statusPresentation(for: itemId)
-    }
-
     // MARK: -
 
     private func load(replace: Bool, isNextPage: Bool = false) async {
@@ -203,10 +160,12 @@ final class InventoryFeatureModel {
             let response = try await authenticated.perform { url, token in
                 try await self.apiClient.fetchItems(serverURL: url, accessToken: token, query: snapshot)
             }
+            // Overlay optimistic placement for any items with queued offline moves.
+            let overlaid = offlineSyncCoordinator.overlay(response.items)
             if replace {
-                items = response.items
+                items = overlaid
             } else {
-                items.append(contentsOf: response.items)
+                items.append(contentsOf: overlaid)
             }
             totalItems = response.totalItems
             totalPages = response.totalPages
@@ -223,10 +182,10 @@ final class InventoryFeatureModel {
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
-            offlineMovementStore: offlineMovementStore,
+            reminderCoordinator: reminderCoordinator,
+            offlineSyncCoordinator: offlineSyncCoordinator,
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated,
-            onReminderSourcesChanged: onReminderSourcesChanged,
             onItemUpdated: { [weak self] updated in
                 self?.replaceItem(updated)
             },
@@ -251,36 +210,12 @@ final class InventoryFeatureModel {
         )
     }
 
-    func makeMovementModel(for item: ItemResponse) -> MovementFeatureModel {
-        MovementFeatureModel(
-            currentItem: item,
-            storedContext: storedContext,
-            sessionModel: sessionModel,
-            apiClient: apiClient,
-            offlineMovementStore: offlineMovementStore,
-            onContextUpdated: onContextUpdated,
-            onSessionInvalidated: onSessionInvalidated,
-            onReminderSourcesChanged: onReminderSourcesChanged
-        )
-    }
-
-    func makeHistoryModel(for itemID: Int64) -> ItemHistoryFeatureModel {
-        ItemHistoryFeatureModel(
-            itemID: itemID,
-            storedContext: storedContext,
-            sessionModel: sessionModel,
-            apiClient: apiClient,
-            offlineMovementStore: offlineMovementStore,
-            onContextUpdated: onContextUpdated,
-            onSessionInvalidated: onSessionInvalidated
-        )
-    }
-
     func makeLocationManagementModel() -> LocationManagementFeatureModel {
         LocationManagementFeatureModel(
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
+            offlineSyncCoordinator: offlineSyncCoordinator,
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated
         )

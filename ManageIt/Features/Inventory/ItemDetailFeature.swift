@@ -12,13 +12,13 @@ struct ItemDetailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                if store.isLoading && store.displayedItem == nil {
+                if store.isLoading && store.item == nil {
                     ProgressView()
                         .padding(.top, 80)
-                } else if let item = store.displayedItem {
+                } else if let item = store.item {
                     headerSection(item: item)
-                    if let offlineStatus = store.offlineStatusPresentation {
-                        offlineStatusCard(offlineStatus)
+                    if let queued = store.queuedOfflineEntry {
+                        offlineEntryBanner(entry: queued)
                     }
                     metadataSection(item: item)
                     statusSection(item: item)
@@ -109,6 +109,15 @@ struct ItemDetailView: View {
                     tint: AppTheme.primary
                 )
 
+                if let currentExhibition = item.currentExhibition {
+                    statusRow(
+                        icon: "rectangle.stack.fill",
+                        label: "Active in exhibition",
+                        value: "\(currentExhibition.name) (\(currentExhibition.startDate.formattedForDisplay()) → \(currentExhibition.endDate.formattedForDisplay()))",
+                        tint: AppTheme.approvedText
+                    )
+                }
+
                 if let promised = item.planning.promisedOrganization {
                     statusRow(
                         icon: "calendar.badge.plus",
@@ -126,9 +135,63 @@ struct ItemDetailView: View {
                         tint: AppTheme.plannedText
                     )
                 }
+
+                if item.currentPlacement.presenceType == .external,
+                   let scheduled = store.scheduledRentalReminderDate {
+                    rentalReminderChip(date: scheduled)
+                }
             }
         }
         .museumPanel()
+    }
+
+    private func offlineEntryBanner(entry: OfflineMovementEntry) -> some View {
+        let isRejected = entry.status == .rejected
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: isRejected ? "exclamationmark.octagon.fill" : "tray.and.arrow.up.fill")
+                    .foregroundStyle(isRejected ? AppTheme.rejectedText : AppTheme.plannedText)
+                Text(isRejected ? "Sync rejected" : "Queued offline movement")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(isRejected ? AppTheme.rejectedText : AppTheme.ink)
+                Spacer()
+            }
+            Text(isRejected
+                ? "The server refused this replay (stale or invalid). Discard it and create a fresh move."
+                : "Pending sync since \(entry.queuedAt.formatted(date: .abbreviated, time: .shortened)). Optimistic placement shown above.")
+                .font(.system(size: 12))
+                .foregroundStyle(AppTheme.mutedInk)
+            if let lastError = entry.lastError {
+                Text(lastError)
+                    .font(.system(size: 11))
+                    .foregroundStyle(AppTheme.rejectedText)
+            }
+            HStack(spacing: 8) {
+                Button(role: .destructive) {
+                    store.discardQueuedEntry()
+                } label: {
+                    Label("Discard", systemImage: "trash")
+                }
+                .buttonStyle(DestructiveButtonStyle())
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12).fill(isRejected ? AppTheme.rejectedBg : AppTheme.plannedBg)
+        )
+    }
+
+    private func rentalReminderChip(date: Date) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "bell.fill")
+                .font(.system(size: 11))
+            Text("Return reminder set for \(date.formatted(date: .abbreviated, time: .shortened))")
+                .font(.system(size: 11, weight: .medium))
+        }
+        .foregroundStyle(AppTheme.plannedText)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(AppTheme.plannedBg))
     }
 
     private var historySection: some View {
@@ -143,24 +206,17 @@ struct ItemDetailView: View {
 
             if store.isLoadingHistory && store.historyEntries.isEmpty {
                 ProgressView().frame(maxWidth: .infinity)
-            } else if store.displayedHistoryEntries.isEmpty {
-                if let message = store.historyErrorMessage {
-                    Text(message)
-                        .font(.system(size: 12))
-                        .foregroundStyle(AppTheme.rejectedText)
-                } else {
-                    Text("No history yet.")
-                        .font(.system(size: 13))
-                        .foregroundStyle(AppTheme.mutedInk)
-                }
+            } else if let message = store.historyErrorMessage {
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundStyle(AppTheme.rejectedText)
+            } else if store.historyEntries.isEmpty {
+                Text("No history yet.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(AppTheme.mutedInk)
             } else {
                 VStack(spacing: 10) {
-                    if let message = store.historyErrorMessage {
-                        Text(message)
-                            .font(.system(size: 12))
-                            .foregroundStyle(AppTheme.rejectedText)
-                    }
-                    ForEach(store.displayedHistoryEntries.suffix(3)) { entry in
+                    ForEach(store.historyEntries.prefix(3)) { entry in
                         HistoryRow(entry: entry)
                     }
                 }
@@ -188,7 +244,7 @@ struct ItemDetailView: View {
                     Label("Move", systemImage: "location.circle")
                 }
                 .buttonStyle(SoftButtonStyle())
-                .disabled(item.archived || store.offlineStatusPresentation != nil)
+                .disabled(item.archived)
             }
             .frame(maxWidth: .infinity)
 
@@ -216,27 +272,6 @@ struct ItemDetailView: View {
                 Task { await store.reload() }
             }
             .buttonStyle(SoftButtonStyle())
-        }
-        .museumPanel()
-    }
-
-    private func offlineStatusCard(_ status: OfflineMovementStatusPresentation) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                StatusTag(text: status.text, kind: status.kind)
-                Spacer()
-                if status.canDismiss {
-                    Button("Dismiss") {
-                        store.dismissRejectedOfflineMovement()
-                    }
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(AppTheme.primary)
-                }
-            }
-
-            Text(status.message)
-                .font(.system(size: 13))
-                .foregroundStyle(AppTheme.ink)
         }
         .museumPanel()
     }
@@ -285,10 +320,13 @@ struct ItemDetailView: View {
 struct HistoryRow: View {
     let entry: ItemHistoryEntry
 
+    /// Synthetic entries inserted by the offline coordinator carry a negative id.
+    private var isPendingSync: Bool { entry.id < 0 }
+
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: entry.presenceType == .external ? "paperplane.fill" : "mappin.and.ellipse")
-                .foregroundStyle(AppTheme.primary)
+                .foregroundStyle(isPendingSync ? AppTheme.plannedText : AppTheme.primary)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -296,11 +334,8 @@ struct HistoryRow: View {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(AppTheme.ink)
                     Spacer()
-                    if let localSyncState = entry.localSyncState {
-                        StatusTag(
-                            text: localSyncState == .queued ? "Queued offline" : "Sync rejected",
-                            kind: localSyncState == .queued ? .planned : .rejected
-                        )
+                    if isPendingSync {
+                        StatusTag(text: "Pending sync", kind: .planned)
                     } else if entry.isOpen {
                         StatusTag(text: "Current", kind: .approved)
                     }
@@ -316,20 +351,24 @@ struct HistoryRow: View {
                 .font(.system(size: 12))
                 .foregroundStyle(AppTheme.mutedInk)
 
-                Text("Performer: \(entry.performerName)")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(AppTheme.subtleInk)
-
                 if let expected = entry.expectedReturnDate {
                     Text("Expected return: \(expected.formattedForDisplay())")
                         .font(.system(size: 11))
                         .foregroundStyle(AppTheme.plannedText)
                 }
 
-                if let localSyncMessage = entry.localSyncMessage {
-                    Text(localSyncMessage)
+                if let actor = entry.movedByDevice {
+                    HStack(spacing: 4) {
+                        Image(systemName: actor.deviceIconName)
+                            .font(.system(size: 10))
+                        Text("Moved by \(actor.friendlyName)")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundStyle(AppTheme.subtleInk)
+                } else {
+                    Text("Moved by host admin")
                         .font(.system(size: 11))
-                        .foregroundStyle(AppTheme.rejectedText)
+                        .foregroundStyle(AppTheme.subtleInk)
                 }
             }
         }

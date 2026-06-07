@@ -5,10 +5,26 @@ struct MovementOrganizationInput: Codable, Equatable {
     let name: String?
 }
 
-struct MovementExpectedSourcePlacementInput: Codable, Equatable {
+/// Snapshot of the item's expected current placement on the iPhone at queue
+/// time. Sent back during offline replay so the server can reject the write
+/// if its database state has drifted since the queued move was authored
+/// (`STALE_OFFLINE_MOVEMENT`).
+struct ExpectedSourcePlacement: Codable, Equatable {
     let presenceType: ItemPresenceType
     let locationId: Int64?
     let organizationId: Int64?
+
+    init(presenceType: ItemPresenceType, locationId: Int64?, organizationId: Int64?) {
+        self.presenceType = presenceType
+        self.locationId = locationId
+        self.organizationId = organizationId
+    }
+
+    init(placement: ItemPlacement) {
+        self.presenceType = placement.presenceType
+        self.locationId = placement.location?.id
+        self.organizationId = placement.organization?.id
+    }
 }
 
 struct ItemMovementCreateRequest: Codable, Equatable {
@@ -17,7 +33,7 @@ struct ItemMovementCreateRequest: Codable, Equatable {
     let organization: MovementOrganizationInput?
     let moveInDate: BusinessDate
     let expectedReturnDate: BusinessDate?
-    let expectedSourcePlacement: MovementExpectedSourcePlacementInput?
+    let expectedSourcePlacement: ExpectedSourcePlacement?
 }
 
 enum MovementEntryMode: Equatable {
@@ -42,16 +58,11 @@ enum MovementEntryMode: Equatable {
     }
 }
 
-struct MovedByDeviceSummary: Codable, Equatable, Hashable {
-    let id: UUID
-    let friendlyName: String
-    let deviceType: DeviceType
-}
-
-enum OfflineMovementSyncState: String, Codable, Equatable {
-    case queued
-    case rejected
-}
+// MARK: - Local history row view model
+//
+// The backend success contract for `GET /api/items/{id}/history` is not finalized
+// in Part III of the iOS source-of-truth. The view layer renders this local shape
+// once a concrete row decoder is available (`itemHistoryDecoder` in the API client).
 
 struct ItemHistoryEntry: Identifiable, Equatable {
     let id: Int64
@@ -61,41 +72,21 @@ struct ItemHistoryEntry: Identifiable, Equatable {
     let moveInDate: BusinessDate
     let expectedReturnDate: BusinessDate?
     let moveOutDate: BusinessDate?
-    let movedByDevice: MovedByDeviceSummary?
-    let createdAt: Date?
-    let localSyncState: OfflineMovementSyncState?
-    let localSyncMessage: String?
+    let movedByDevice: MovedByDevice?
 
     var isOpen: Bool { moveOutDate == nil }
 
     var targetName: String {
         switch presenceType {
-        case .internal: return location?.displayName ?? "—"
+        case .internal: return location?.displayPath ?? "—"
         case .external: return organization?.name ?? "—"
         }
     }
-
-    var performerName: String {
-        movedByDevice?.friendlyName ?? "Host admin created"
-    }
-
-    func closing(at moveOutDate: BusinessDate) -> ItemHistoryEntry {
-        ItemHistoryEntry(
-            id: id,
-            presenceType: presenceType,
-            location: location,
-            organization: organization,
-            moveInDate: moveInDate,
-            expectedReturnDate: expectedReturnDate,
-            moveOutDate: moveOutDate,
-            movedByDevice: movedByDevice,
-            createdAt: createdAt,
-            localSyncState: localSyncState,
-            localSyncMessage: localSyncMessage
-        )
-    }
 }
 
+/// Decoder shape for whatever the backend returns. Defensive: tolerates either
+/// a bare array or `{ "entries": [...] }`. Once the source-of-truth fills in
+/// the exact response, this can collapse to the canonical shape.
 struct ItemHistoryListResponse: Decodable {
     let entries: [ItemHistoryEntry]
 
@@ -122,7 +113,6 @@ extension ItemHistoryEntry: Decodable {
         case expectedReturnDate
         case moveOutDate
         case movedByDevice
-        case createdAt
     }
 
     init(from decoder: Decoder) throws {
@@ -134,9 +124,6 @@ extension ItemHistoryEntry: Decodable {
         self.moveInDate = try c.decode(BusinessDate.self, forKey: .moveInDate)
         self.expectedReturnDate = try c.decodeIfPresent(BusinessDate.self, forKey: .expectedReturnDate)
         self.moveOutDate = try c.decodeIfPresent(BusinessDate.self, forKey: .moveOutDate)
-        self.movedByDevice = try c.decodeIfPresent(MovedByDeviceSummary.self, forKey: .movedByDevice)
-        self.createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt)
-        self.localSyncState = nil
-        self.localSyncMessage = nil
+        self.movedByDevice = try c.decodeIfPresent(MovedByDevice.self, forKey: .movedByDevice)
     }
 }

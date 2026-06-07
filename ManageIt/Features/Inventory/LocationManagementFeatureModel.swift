@@ -6,16 +6,17 @@ import Observation
 final class LocationManagementFeatureModel {
     var locations: [LocationResponse] = []
     var includeArchived: Bool = false
-    var rootComposerOpen: Bool = false
-    var rootDraftLocationName: String = ""
-    var openChildParentID: Int64?
-    var childDrafts: [Int64: String] = [:]
+    var draftLocationName: String = ""
+    var draftParent: LocationResponse?
     var editingLocationID: Int64?
     var editingName: String = ""
     var isLoading: Bool = false
     var isSaving: Bool = false
     var errorMessage: String?
-    var successMessage: String?
+
+    /// Built from the flat `locations` list — used by the tree picker for parent
+    /// selection and the management list display.
+    var tree: [LocationTreeNode] { LocationTreeBuilder.build(from: locations) }
 
     var storedContext: StoredDeviceContext
 
@@ -24,6 +25,9 @@ final class LocationManagementFeatureModel {
 
     @ObservationIgnored
     private let apiClient: ManageItAPIClient
+
+    @ObservationIgnored
+    let offlineSyncCoordinator: OfflineSyncCoordinator
 
     @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
@@ -38,12 +42,14 @@ final class LocationManagementFeatureModel {
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
+        offlineSyncCoordinator: OfflineSyncCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
         onSessionInvalidated: @escaping () -> Void
     ) {
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
+        self.offlineSyncCoordinator = offlineSyncCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
         self.authenticated = AuthenticatedAPI(
@@ -55,24 +61,20 @@ final class LocationManagementFeatureModel {
         )
     }
 
-    var locationTree: [LocationTreeNode] {
-        buildLocationTree(from: locations)
-    }
-
     func load() async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
-
         do {
             let result = try await authenticated.perform { url, token in
-                try await self.apiClient.fetchLocations(
-                    serverURL: url,
-                    accessToken: token,
-                    includeArchived: self.includeArchived
-                )
+                try await self.apiClient.fetchLocations(serverURL: url, accessToken: token, includeArchived: self.includeArchived)
             }
-            self.locations = sortLocationsByPath(result)
+            self.locations = result
+            // Refresh the offline cache only with the unfiltered list to avoid
+            // leaking archived items into picker fallbacks.
+            if !includeArchived {
+                offlineSyncCoordinator.updateLocationCache(result)
+            }
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
@@ -83,99 +85,37 @@ final class LocationManagementFeatureModel {
         Task { await load() }
     }
 
-    func toggleRootComposer() {
-        rootComposerOpen.toggle()
-        if rootComposerOpen {
-            openChildParentID = nil
-        } else {
-            rootDraftLocationName = ""
-        }
-        errorMessage = nil
-        successMessage = nil
-    }
-
-    func toggleChildComposer(for location: LocationResponse) {
-        rootComposerOpen = false
-        errorMessage = nil
-        successMessage = nil
-        if openChildParentID == location.id {
-            openChildParentID = nil
-            childDrafts[location.id] = ""
-        } else {
-            openChildParentID = location.id
-        }
-    }
-
-    func updateChildDraft(parentID: Int64, value: String) {
-        childDrafts[parentID] = value
-        if errorMessage != nil {
-            errorMessage = nil
-        }
-    }
-
-    func createRootLocation() async {
-        await createLocation(
-            draftName: rootDraftLocationName,
-            parentLocationID: nil,
-            successCopy: "Root location added."
-        )
-    }
-
-    func createChildLocation(parent: LocationResponse) async {
-        await createLocation(
-            draftName: childDrafts[parent.id] ?? "",
-            parentLocationID: parent.id,
-            successCopy: "Added a sub-location under \(parent.name)."
-        )
-    }
-
-    private func createLocation(
-        draftName: String,
-        parentLocationID: Int64?,
-        successCopy: String
-    ) async {
-        let trimmed = draftName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            errorMessage = parentLocationID == nil
-                ? "A root location name is required."
-                : "A sub-location name is required."
-            return
-        }
-
+    func createLocation() async {
+        let trimmed = draftLocationName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let parentId = draftParent?.id
         isSaving = true
-        errorMessage = nil
-        successMessage = nil
         defer { isSaving = false }
-
         do {
-            _ = try await authenticated.perform { url, token in
+            let created = try await authenticated.perform { url, token in
                 try await self.apiClient.createLocation(
                     serverURL: url,
                     accessToken: token,
-                    request: LocationCreateRequest(
-                        name: trimmed,
-                        parentLocationId: parentLocationID
-                    )
+                    request: LocationCreateRequest(name: trimmed, parentLocationId: parentId)
                 )
             }
-            rootDraftLocationName = ""
-            rootComposerOpen = false
-            if let parentLocationID {
-                childDrafts[parentLocationID] = ""
-            }
-            openChildParentID = nil
-            successMessage = successCopy
+            locations.append(created)
+            draftLocationName = ""
+            draftParent = nil
+            // Reload so paths and parent references refresh for the new node and its siblings.
             await load()
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
     }
 
+    func selectDraftParent(_ location: LocationResponse?) {
+        draftParent = location
+    }
+
     func beginEditing(_ location: LocationResponse) {
         editingLocationID = location.id
         editingName = location.name
-        errorMessage = nil
-        successMessage = nil
     }
 
     func cancelEditing() {
@@ -186,50 +126,35 @@ final class LocationManagementFeatureModel {
     func saveEditing() async {
         guard let id = editingLocationID else { return }
         let trimmed = editingName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            errorMessage = "Location name cannot be empty."
-            return
-        }
-
+        guard !trimmed.isEmpty else { return }
         isSaving = true
-        errorMessage = nil
-        successMessage = nil
         defer { isSaving = false }
-
         do {
-            _ = try await authenticated.perform { url, token in
-                try await self.apiClient.updateLocation(
-                    serverURL: url,
-                    accessToken: token,
-                    locationID: id,
-                    request: LocationUpdateRequest(name: trimmed)
-                )
+            let updated = try await authenticated.perform { url, token in
+                try await self.apiClient.updateLocation(serverURL: url, accessToken: token, locationID: id, request: LocationUpdateRequest(name: trimmed))
+            }
+            if let idx = locations.firstIndex(where: { $0.id == id }) {
+                locations[idx] = updated
             }
             editingLocationID = nil
             editingName = ""
-            successMessage = "Location renamed."
-            await load()
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
     }
 
     func archiveLocation(_ location: LocationResponse) async {
-        isSaving = true
-        errorMessage = nil
-        successMessage = nil
-        defer { isSaving = false }
-
         do {
-            _ = try await authenticated.perform { url, token in
-                try await self.apiClient.archiveLocation(
-                    serverURL: url,
-                    accessToken: token,
-                    locationID: location.id
-                )
+            let archived = try await authenticated.perform { url, token in
+                try await self.apiClient.archiveLocation(serverURL: url, accessToken: token, locationID: location.id)
             }
-            successMessage = "\(location.name) archived."
-            await load()
+            if let idx = locations.firstIndex(where: { $0.id == archived.id }) {
+                if includeArchived {
+                    locations[idx] = archived
+                } else {
+                    locations.remove(at: idx)
+                }
+            }
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }

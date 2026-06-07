@@ -1,5 +1,20 @@
 import Foundation
 
+// MARK: - App Transport Security note
+//
+// The architecture defers the exact ATS exception policy (see
+// must_read_for_ios/ios_front_technical_spec.md §14.12). Demo mode works
+// because `DemoAPIProtocol` intercepts requests before ATS evaluation, so
+// `http://demo.manageit.local` round-trips fine without an exception.
+//
+// To pair against a real LAN HTTP server on a physical iPhone, the host
+// project must add an `NSAppTransportSecurity` entry — typically
+// `NSAllowsLocalNetworking = true` for LAN-only deployments, or scoped
+// `NSExceptionDomains` per museum host. Switching this on requires turning
+// off `GENERATE_INFOPLIST_FILE` and providing a manual `Info.plist`. That
+// transition is intentionally left to the deployment team because it is
+// production-affecting and unrelated to the iOS feature scope.
+
 struct InventoryListQuery: Equatable {
     var searchText: String = ""
     var includeArchived: Bool = false
@@ -142,36 +157,6 @@ struct ManageItAPIClient {
         )
     }
 
-    func fetchAllItems(
-        serverURL: URL,
-        accessToken: String,
-        includeArchived: Bool = false,
-        pageSize: Int = 100
-    ) async throws -> [ItemResponse] {
-        var allItems: [ItemResponse] = []
-        var page = 0
-        var totalPages = 1
-
-        while page < totalPages {
-            let response = try await fetchItems(
-                serverURL: serverURL,
-                accessToken: accessToken,
-                query: InventoryListQuery(
-                    searchText: "",
-                    includeArchived: includeArchived,
-                    page: page,
-                    size: pageSize,
-                    sort: nil
-                )
-            )
-            allItems.append(contentsOf: response.items)
-            totalPages = max(response.totalPages, 1)
-            page += 1
-        }
-
-        return allItems
-    }
-
     func createItem(
         serverURL: URL,
         accessToken: String,
@@ -240,7 +225,12 @@ struct ManageItAPIClient {
             path: "/items/conflicts/main-number",
             method: "GET",
             accessToken: accessToken,
-            queryItems: [URLQueryItem(name: "mainInventoryNumber", value: mainInventoryNumber)],
+            queryItems: [
+                URLQueryItem(name: "mainInventoryNumber", value: mainInventoryNumber),
+                // Per architecture rule: archived items keep their main inventory
+                // number permanently reserved, so the pre-check must include them.
+                URLQueryItem(name: "includeArchived", value: "true")
+            ],
             body: Optional<String>.none
         )
     }
@@ -306,64 +296,6 @@ struct ManageItAPIClient {
             method: "POST",
             accessToken: accessToken,
             body: Optional<String>.none
-        )
-    }
-
-    // MARK: - Exhibitions
-
-    func fetchExhibitions(
-        serverURL: URL,
-        accessToken: String
-    ) async throws -> [ExhibitionSummaryResponse] {
-        try await sendAuthenticatedRequest(
-            serverURL: serverURL,
-            path: "/exhibitions",
-            method: "GET",
-            accessToken: accessToken,
-            body: Optional<String>.none
-        )
-    }
-
-    func createExhibition(
-        serverURL: URL,
-        accessToken: String,
-        request: ExhibitionCreateRequest
-    ) async throws -> ExhibitionDetailResponse {
-        try await sendAuthenticatedRequest(
-            serverURL: serverURL,
-            path: "/exhibitions",
-            method: "POST",
-            accessToken: accessToken,
-            body: request
-        )
-    }
-
-    func fetchExhibition(
-        serverURL: URL,
-        accessToken: String,
-        exhibitionID: Int64
-    ) async throws -> ExhibitionDetailResponse {
-        try await sendAuthenticatedRequest(
-            serverURL: serverURL,
-            path: "/exhibitions/\(exhibitionID)",
-            method: "GET",
-            accessToken: accessToken,
-            body: Optional<String>.none
-        )
-    }
-
-    func updateExhibition(
-        serverURL: URL,
-        accessToken: String,
-        exhibitionID: Int64,
-        request: ExhibitionUpdateRequest
-    ) async throws -> ExhibitionDetailResponse {
-        try await sendAuthenticatedRequest(
-            serverURL: serverURL,
-            path: "/exhibitions/\(exhibitionID)",
-            method: "PUT",
-            accessToken: accessToken,
-            body: request
         )
     }
 
@@ -438,6 +370,71 @@ struct ManageItAPIClient {
             serverURL: serverURL,
             path: "/organizations",
             method: "POST",
+            accessToken: accessToken,
+            body: request
+        )
+    }
+
+    // MARK: - Exhibitions
+
+    func fetchExhibitions(
+        serverURL: URL,
+        accessToken: String,
+        phase: ExhibitionPhase? = nil
+    ) async throws -> [ExhibitionResponse] {
+        var items: [URLQueryItem] = []
+        if let phase {
+            items.append(URLQueryItem(name: "phase", value: phase.rawValue))
+        }
+        let response: ExhibitionListResponse = try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions",
+            method: "GET",
+            accessToken: accessToken,
+            queryItems: items,
+            body: Optional<String>.none
+        )
+        return response.exhibitions
+    }
+
+    func fetchExhibition(
+        serverURL: URL,
+        accessToken: String,
+        id: Int64
+    ) async throws -> ExhibitionResponse {
+        try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions/\(id)",
+            method: "GET",
+            accessToken: accessToken,
+            body: Optional<String>.none
+        )
+    }
+
+    func createExhibition(
+        serverURL: URL,
+        accessToken: String,
+        request: ExhibitionCreateRequest
+    ) async throws -> ExhibitionResponse {
+        try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions",
+            method: "POST",
+            accessToken: accessToken,
+            body: request
+        )
+    }
+
+    func updateExhibition(
+        serverURL: URL,
+        accessToken: String,
+        id: Int64,
+        request: ExhibitionUpdateRequest
+    ) async throws -> ExhibitionResponse {
+        try await sendAuthenticatedRequest(
+            serverURL: serverURL,
+            path: "/exhibitions/\(id)",
+            method: "PUT",
             accessToken: accessToken,
             body: request
         )
@@ -614,7 +611,9 @@ struct ManageItAPIClient {
         }
 
         var basePath = components.path
-        while basePath.hasSuffix("/") && basePath.count > 1 {
+        // Trim every trailing slash, including a lone "/", so the joined path
+        // never gets a double slash like "//api/locations".
+        while basePath.hasSuffix("/") {
             basePath.removeLast()
         }
 

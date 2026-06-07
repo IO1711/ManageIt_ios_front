@@ -4,8 +4,10 @@ import Observation
 @MainActor
 @Observable
 final class ExhibitionsFeatureModel {
-    var exhibitions: [ExhibitionSummaryResponse] = []
+    var exhibitions: [ExhibitionResponse] = []
+    var phaseFilter: ExhibitionPhase?
     var isLoading: Bool = false
+    var hasLoadedOnce: Bool = false
     var errorMessage: String?
 
     var storedContext: StoredDeviceContext
@@ -17,13 +19,13 @@ final class ExhibitionsFeatureModel {
     private let apiClient: ManageItAPIClient
 
     @ObservationIgnored
+    let reminderCoordinator: ReminderCoordinator
+
+    @ObservationIgnored
     private let onContextUpdated: (StoredDeviceContext) -> Void
 
     @ObservationIgnored
     private let onSessionInvalidated: () -> Void
-
-    @ObservationIgnored
-    private let onReminderSourcesChanged: () -> Void
 
     @ObservationIgnored
     private var authenticated: AuthenticatedAPI
@@ -32,16 +34,16 @@ final class ExhibitionsFeatureModel {
         storedContext: StoredDeviceContext,
         sessionModel: DeviceSessionModel,
         apiClient: ManageItAPIClient,
+        reminderCoordinator: ReminderCoordinator,
         onContextUpdated: @escaping (StoredDeviceContext) -> Void,
-        onSessionInvalidated: @escaping () -> Void,
-        onReminderSourcesChanged: @escaping () -> Void
+        onSessionInvalidated: @escaping () -> Void
     ) {
         self.storedContext = storedContext
         self.sessionModel = sessionModel
         self.apiClient = apiClient
+        self.reminderCoordinator = reminderCoordinator
         self.onContextUpdated = onContextUpdated
         self.onSessionInvalidated = onSessionInvalidated
-        self.onReminderSourcesChanged = onReminderSourcesChanged
         self.authenticated = AuthenticatedAPI(
             apiClient: apiClient,
             sessionModel: sessionModel,
@@ -51,105 +53,83 @@ final class ExhibitionsFeatureModel {
         )
     }
 
-    func updateStoredContext(_ context: StoredDeviceContext) {
-        storedContext = context
-        authenticated = AuthenticatedAPI(
-            apiClient: apiClient,
-            sessionModel: sessionModel,
-            storedContext: context,
-            onContextUpdated: onContextUpdated,
-            onSessionInvalidated: onSessionInvalidated
-        )
+    var role: DeviceRole { storedContext.role }
+
+    var filteredExhibitions: [ExhibitionResponse] {
+        guard let phaseFilter else { return exhibitions }
+        return exhibitions.filter { $0.phase == phaseFilter }
+    }
+
+    func setPhaseFilter(_ phase: ExhibitionPhase?) {
+        phaseFilter = phase
     }
 
     func load() async {
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
-
+        defer {
+            isLoading = false
+            hasLoadedOnce = true
+        }
         do {
             let result = try await authenticated.perform { url, token in
-                try await self.apiClient.fetchExhibitions(serverURL: url, accessToken: token)
+                try await self.apiClient.fetchExhibitions(serverURL: url, accessToken: token, phase: nil)
             }
-            exhibitions = result.sorted { self.exhibitionSort(lhs: $0, rhs: $1) }
+            // Sort: active first, then planned, then ended; within each by start date.
+            self.exhibitions = result.sorted { lhs, rhs in
+                if lhs.phase != rhs.phase {
+                    return phaseSortRank(lhs.phase) < phaseSortRank(rhs.phase)
+                }
+                return lhs.startDate < rhs.startDate
+            }
+            await reminderCoordinator.syncExhibitionReminders(self.exhibitions)
         } catch {
             errorMessage = AuthenticatedAPI.userFacing(error)
         }
     }
 
-    func exhibitions(for phase: ExhibitionPhase) -> [ExhibitionSummaryResponse] {
-        exhibitions.filter { $0.phase == phase }
-    }
-
-    func upsertSummary(from detail: ExhibitionDetailResponse) {
-        let summary = ExhibitionSummaryResponse(
-            id: detail.id,
-            name: detail.name,
-            locationId: detail.location.id,
-            locationPath: detail.location.displayName,
-            startDate: detail.startDate,
-            endDate: detail.endDate,
-            phase: detail.phase,
-            itemCount: detail.items.count
-        )
-
-        if let index = exhibitions.firstIndex(where: { $0.id == summary.id }) {
-            exhibitions[index] = summary
-        } else {
-            exhibitions.append(summary)
+    func replaceExhibition(_ updated: ExhibitionResponse) {
+        if let idx = exhibitions.firstIndex(where: { $0.id == updated.id }) {
+            exhibitions[idx] = updated
         }
-
-        exhibitions.sort { self.exhibitionSort(lhs: $0, rhs: $1) }
     }
 
-    func makeDetailModel(for exhibitionID: Int64) -> ExhibitionDetailFeatureModel {
+    func makeDetailModel(for id: Int64) -> ExhibitionDetailFeatureModel {
         ExhibitionDetailFeatureModel(
-            exhibitionID: exhibitionID,
+            exhibitionID: id,
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
+            reminderCoordinator: reminderCoordinator,
             onContextUpdated: onContextUpdated,
             onSessionInvalidated: onSessionInvalidated,
-            onReminderSourcesChanged: onReminderSourcesChanged,
-            onExhibitionUpdated: { [weak self] detail in
-                self?.upsertSummary(from: detail)
+            onExhibitionUpdated: { [weak self] updated in
+                self?.replaceExhibition(updated)
+                Task {
+                    if let exhibitions = self?.exhibitions {
+                        await self?.reminderCoordinator.syncExhibitionReminders(exhibitions)
+                    }
+                }
             }
         )
     }
 
-    func makeCreateModel() -> ExhibitionEditorFeatureModel {
+    func makeCreateEditorModel() -> ExhibitionEditorFeatureModel {
         ExhibitionEditorFeatureModel(
             mode: .create,
             storedContext: storedContext,
             sessionModel: sessionModel,
             apiClient: apiClient,
             onContextUpdated: onContextUpdated,
-            onSessionInvalidated: onSessionInvalidated,
-            onReminderSourcesChanged: onReminderSourcesChanged
+            onSessionInvalidated: onSessionInvalidated
         )
     }
 
-    private func exhibitionSort(
-        lhs: ExhibitionSummaryResponse,
-        rhs: ExhibitionSummaryResponse
-    ) -> Bool {
-        if lhs.phase != rhs.phase {
-            return phaseOrder(lhs.phase) < phaseOrder(rhs.phase)
-        }
-        if lhs.startDate != rhs.startDate {
-            return lhs.startDate < rhs.startDate
-        }
-        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-    }
-
-    private func phaseOrder(_ phase: ExhibitionPhase) -> Int {
+    private func phaseSortRank(_ phase: ExhibitionPhase) -> Int {
         switch phase {
-        case .active:
-            return 0
-        case .planned:
-            return 1
-        case .ended:
-            return 2
+        case .active: return 0
+        case .planned: return 1
+        case .ended: return 2
         }
     }
 }

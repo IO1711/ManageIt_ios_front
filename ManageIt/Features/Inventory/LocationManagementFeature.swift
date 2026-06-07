@@ -3,13 +3,14 @@ import SwiftUI
 struct LocationManagementView: View {
     let store: LocationManagementFeatureModel
 
+    @State private var showParentPicker = false
+
     var body: some View {
         @Bindable var store = store
 
         ScrollView {
             VStack(spacing: 16) {
                 header
-
                 Toggle(isOn: Binding(
                     get: { store.includeArchived },
                     set: { store.toggleIncludeArchived($0) }
@@ -21,15 +22,11 @@ struct LocationManagementView: View {
                 .tint(AppTheme.primary)
                 .padding(.horizontal, 4)
 
-                rootComposerSection(store: store)
-                locationTreeSection(store: store)
+                createLocationSection(store: store)
+                locationList(store: store)
 
-                if let successMessage = store.successMessage {
-                    inlineMessage(text: successMessage, tone: .success)
-                }
-
-                if let errorMessage = store.errorMessage {
-                    inlineMessage(text: errorMessage, tone: .error)
+                if let error = store.errorMessage {
+                    inlineMessage(text: error)
                 }
             }
             .padding(20)
@@ -45,76 +42,123 @@ struct LocationManagementView: View {
         .refreshable {
             await store.load()
         }
+        .sheet(isPresented: $showParentPicker) {
+            ParentLocationPicker(
+                allLocations: store.locations,
+                selected: store.draftParent,
+                onSelect: { parent in
+                    store.selectDraftParent(parent)
+                    showParentPicker = false
+                },
+                onClear: {
+                    store.selectDraftParent(nil)
+                    showParentPicker = false
+                },
+                onCancel: { showParentPicker = false }
+            )
+        }
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Museum location hierarchy")
+            Text("Museum locations")
                 .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(AppTheme.ink)
-            Text("Admins can add root locations or grow the nested tree in place. Only leaf locations are assignable to items and exhibitions.")
+            Text("Admin-only. Locations form a hierarchy — only leaves can hold items. Locations cannot be hard-deleted because they may have history.")
                 .font(.system(size: 13))
                 .foregroundStyle(AppTheme.mutedInk)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func rootComposerSection(store: LocationManagementFeatureModel) -> some View {
+    private func createLocationSection(store: LocationManagementFeatureModel) -> some View {
         @Bindable var store = store
 
         return VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                sectionHeader("Add root location")
-                Spacer()
+            sectionHeader("Add new location")
+
+            VStack(alignment: .leading, spacing: 6) {
+                FieldLabel(title: "Parent")
                 Button {
-                    store.toggleRootComposer()
+                    showParentPicker = true
                 } label: {
-                    Label(
-                        store.rootComposerOpen ? "Close" : "New root",
-                        systemImage: store.rootComposerOpen ? "xmark.circle" : "plus.circle"
+                    HStack {
+                        if let parent = store.draftParent {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(parent.displayPath)
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(AppTheme.ink)
+                                Text("Tap to change")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(AppTheme.mutedInk)
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("(no parent — top-level)")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(AppTheme.ink)
+                                Text("Tap to pick a parent location")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(AppTheme.mutedInk)
+                            }
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(AppTheme.subtleInk)
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 12)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10).fill(AppTheme.paper)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10).stroke(AppTheme.cardBorder, lineWidth: 1)
                     )
                 }
-                .buttonStyle(SoftButtonStyle())
+                .buttonStyle(.plain)
             }
 
-            if store.rootComposerOpen {
-                LocationComposerCard(
-                    title: "Create root location",
-                    placeholder: "Main Hall, Archive Room, East Wing...",
-                    value: $store.rootDraftLocationName,
-                    saveTitle: "Add root",
-                    isSaving: store.isSaving,
-                    onSave: { Task { await store.createRootLocation() } },
-                    onCancel: { store.toggleRootComposer() }
-                )
+            HStack(spacing: 10) {
+                TextField("e.g. Storage 2, Shelf 1", text: $store.draftLocationName)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(AppTheme.paper))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10).stroke(AppTheme.cardBorder, lineWidth: 1)
+                    )
+                Button {
+                    Task { await store.createLocation() }
+                } label: {
+                    if store.isSaving {
+                        ProgressView().tint(.white)
+                    } else {
+                        Label("Add", systemImage: "plus")
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(store.draftLocationName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isSaving)
             }
         }
         .museumPanel()
     }
 
-    private func locationTreeSection(store: LocationManagementFeatureModel) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                sectionHeader("Existing hierarchy")
-                Spacer()
-                Button("Refresh") {
-                    Task { await store.load() }
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(AppTheme.primary)
-            }
+    private func locationList(store: LocationManagementFeatureModel) -> some View {
+        @Bindable var store = store
 
-            if store.isLoading && store.locationTree.isEmpty {
+        return VStack(alignment: .leading, spacing: 12) {
+            sectionHeader("Existing locations")
+
+            if store.isLoading && store.locations.isEmpty {
                 ProgressView().frame(maxWidth: .infinity)
-            } else if store.locationTree.isEmpty {
+            } else if store.locations.isEmpty {
                 Text("No locations yet.")
                     .font(.system(size: 13))
                     .foregroundStyle(AppTheme.mutedInk)
             } else {
-                VStack(spacing: 10) {
-                    ForEach(store.locationTree) { node in
-                        LocationTreeNodeView(store: store, node: node, depth: 0)
+                VStack(spacing: 6) {
+                    ForEach(store.tree) { node in
+                        LocationTreeRow(node: node, depth: 0, store: store)
                     }
                 }
             }
@@ -128,192 +172,211 @@ struct LocationManagementView: View {
             .foregroundStyle(AppTheme.ink)
     }
 
-    private enum InlineTone {
-        case success
-        case error
-    }
-
-    private func inlineMessage(text: String, tone: InlineTone) -> some View {
-        let foreground = tone == .success ? AppTheme.approvedText : AppTheme.rejectedText
-        let background = tone == .success ? AppTheme.approvedBg : AppTheme.rejectedBg
-        let icon = tone == .success ? "checkmark.circle.fill" : "exclamationmark.circle.fill"
-
-        return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: icon)
-            Text(text)
-                .font(.system(size: 13))
+    private func inlineMessage(text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "exclamationmark.circle.fill")
+            Text(text).font(.system(size: 13))
             Spacer()
         }
-        .foregroundStyle(foreground)
+        .foregroundStyle(AppTheme.rejectedText)
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(background))
+        .background(
+            RoundedRectangle(cornerRadius: 10).fill(AppTheme.rejectedBg)
+        )
     }
 }
 
-private struct LocationTreeNodeView: View {
-    let store: LocationManagementFeatureModel
+private struct LocationTreeRow: View {
     let node: LocationTreeNode
     let depth: Int
+    let store: LocationManagementFeatureModel
+
+    @Bindable private var bindableStore: LocationManagementFeatureModel
+    @State private var isExpanded: Bool = true
+
+    init(node: LocationTreeNode, depth: Int, store: LocationManagementFeatureModel) {
+        self.node = node
+        self.depth = depth
+        self.store = store
+        _bindableStore = Bindable(store)
+    }
 
     var body: some View {
-        @Bindable var store = store
-        let location = node.location
-
-        VStack(alignment: .leading, spacing: 10) {
-            if store.editingLocationID == location.id {
-                HStack(spacing: 10) {
-                    TextField("Location name", text: $store.editingName)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(RoundedRectangle(cornerRadius: 8).fill(AppTheme.paper))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(AppTheme.cardBorder, lineWidth: 1)
-                        )
-
-                    Button("Save") {
-                        Task { await store.saveEditing() }
-                    }
-                    .buttonStyle(SoftButtonStyle())
-                    .disabled(store.isSaving)
-
-                    Button("Cancel") {
-                        store.cancelEditing()
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(AppTheme.mutedInk)
+        VStack(spacing: 4) {
+            row
+            if isExpanded && !node.children.isEmpty {
+                ForEach(node.children) { child in
+                    LocationTreeRow(node: child, depth: depth + 1, store: store)
                 }
-            } else {
-                HStack(alignment: .top, spacing: 12) {
-                    Image(systemName: location.assignable ? "circle.grid.2x2.fill" : "square.split.bottomrightquarter")
-                        .foregroundStyle(location.assignable ? AppTheme.primary : AppTheme.mutedInk)
-                        .padding(.top, 2)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(spacing: 6) {
-                            Text(location.name)
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(AppTheme.ink)
-
-                            if location.archived {
-                                StatusTag(text: "Archived", kind: .expired)
-                            } else if location.assignable {
-                                StatusTag(text: "Leaf", kind: .approved)
-                            } else {
-                                StatusTag(text: "Branch", kind: .neutral)
-                            }
-                        }
-
-                        Text(location.displayLabel)
-                            .font(.system(size: 12))
-                            .foregroundStyle(AppTheme.mutedInk)
-                    }
-
-                    Spacer()
-
-                    if !location.archived {
-                        Button {
-                            store.toggleChildComposer(for: location)
-                        } label: {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.system(size: 19))
-                                .foregroundStyle(AppTheme.primary)
-                        }
-                        .buttonStyle(.plain)
-
-                        Menu {
-                            Button("Rename") {
-                                store.beginEditing(location)
-                            }
-                            Button("Archive", role: .destructive) {
-                                Task { await store.archiveLocation(location) }
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.system(size: 19))
-                                .foregroundStyle(AppTheme.mutedInk)
-                        }
-                    }
-                }
-                .padding(.vertical, 10)
-                .padding(.horizontal, 12)
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(AppTheme.canvas)
-                )
-            }
-
-            if store.openChildParentID == location.id {
-                LocationComposerCard(
-                    title: "Add a child under \(location.name)",
-                    placeholder: "Shelf, Grid, Drawer...",
-                    value: Binding(
-                        get: { store.childDrafts[location.id] ?? "" },
-                        set: { store.updateChildDraft(parentID: location.id, value: $0) }
-                    ),
-                    saveTitle: "Add child",
-                    isSaving: store.isSaving,
-                    onSave: { Task { await store.createChildLocation(parent: location) } },
-                    onCancel: { store.toggleChildComposer(for: location) }
-                )
-            }
-
-            if !node.children.isEmpty {
-                VStack(spacing: 10) {
-                    ForEach(node.children) { child in
-                        LocationTreeNodeView(store: store, node: child, depth: depth + 1)
-                    }
-                }
-                .padding(.leading, 18)
             }
         }
-        .padding(.leading, CGFloat(depth) * 8)
+    }
+
+    @ViewBuilder
+    private var row: some View {
+        if store.editingLocationID == node.location.id {
+            HStack(spacing: 10) {
+                indentSpacer
+                TextField("Location name", text: $bindableStore.editingName)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(AppTheme.paper))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8).stroke(AppTheme.cardBorder, lineWidth: 1)
+                    )
+                Button("Save") { Task { await store.saveEditing() } }
+                    .buttonStyle(SoftButtonStyle())
+                    .disabled(store.isSaving)
+                Button("Cancel") { store.cancelEditing() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(AppTheme.mutedInk)
+            }
+        } else {
+            HStack(spacing: 8) {
+                indentSpacer
+
+                Button {
+                    if !node.children.isEmpty { isExpanded.toggle() }
+                } label: {
+                    Image(systemName: node.children.isEmpty
+                        ? "mappin.circle.fill"
+                        : (isExpanded ? "chevron.down" : "chevron.right"))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(node.children.isEmpty ? AppTheme.primary : AppTheme.mutedInk)
+                        .frame(width: 18)
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(node.location.name)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(AppTheme.ink)
+                        if node.location.archived {
+                            StatusTag(text: "Archived", kind: .expired)
+                        }
+                    }
+                    if node.children.isEmpty {
+                        Text("Leaf")
+                            .font(.system(size: 11))
+                            .foregroundStyle(AppTheme.approvedText)
+                    } else {
+                        Text("\(node.children.count) child(ren)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(AppTheme.mutedInk)
+                    }
+                }
+                Spacer()
+
+                if !node.location.archived {
+                    Menu {
+                        Button("Rename") { store.beginEditing(node.location) }
+                        Button("Add child here") {
+                            store.selectDraftParent(node.location)
+                        }
+                        Button("Archive", role: .destructive) {
+                            Task { await store.archiveLocation(node.location) }
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .foregroundStyle(AppTheme.mutedInk)
+                    }
+                }
+            }
+            .padding(.vertical, 8)
+            .padding(.horizontal, 10)
+            .background(RoundedRectangle(cornerRadius: 10).fill(AppTheme.canvas))
+        }
+    }
+
+    private var indentSpacer: some View {
+        Color.clear.frame(width: CGFloat(depth) * 14, height: 1)
     }
 }
 
-private struct LocationComposerCard: View {
-    let title: String
-    let placeholder: String
-    @Binding var value: String
-    let saveTitle: String
-    let isSaving: Bool
-    let onSave: () -> Void
+// MARK: - Parent picker
+
+private struct ParentLocationPicker: View {
+    let allLocations: [LocationResponse]
+    let selected: LocationResponse?
+    let onSelect: (LocationResponse) -> Void
+    let onClear: () -> Void
     let onCancel: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(AppTheme.ink)
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Button {
+                        onClear()
+                    } label: {
+                        HStack {
+                            Image(systemName: "tray")
+                                .foregroundStyle(AppTheme.primary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Top-level (no parent)")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundStyle(AppTheme.ink)
+                                Text("Creates a root location")
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(AppTheme.mutedInk)
+                            }
+                            Spacer()
+                            if selected == nil {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(AppTheme.primary)
+                            }
+                        }
+                        .padding(14)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(AppTheme.paper))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12).stroke(AppTheme.cardBorder, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
 
-            TextField(placeholder, text: $value)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(RoundedRectangle(cornerRadius: 10).fill(AppTheme.paper))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10).stroke(AppTheme.cardBorder, lineWidth: 1)
-                )
-
-            HStack(spacing: 10) {
-                Button(action: onSave) {
-                    if isSaving {
-                        ProgressView().tint(.white)
-                    } else {
-                        Text(saveTitle)
+                    ForEach(allLocations.filter { !$0.archived }, id: \.id) { loc in
+                        Button {
+                            onSelect(loc)
+                        } label: {
+                            HStack {
+                                Image(systemName: "folder.fill")
+                                    .foregroundStyle(AppTheme.primary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(loc.displayPath)
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(AppTheme.ink)
+                                    if loc.name != loc.displayPath {
+                                        Text(loc.name)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(AppTheme.mutedInk)
+                                    }
+                                }
+                                Spacer()
+                                if selected?.id == loc.id {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(AppTheme.primary)
+                                }
+                            }
+                            .padding(14)
+                            .background(RoundedRectangle(cornerRadius: 12).fill(AppTheme.paper))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12).stroke(AppTheme.cardBorder, lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSaving)
-
-                Button("Cancel", action: onCancel)
-                    .buttonStyle(.plain)
-                    .foregroundStyle(AppTheme.mutedInk)
+                .padding(20)
+            }
+            .background(AppTheme.canvas.ignoresSafeArea())
+            .navigationTitle("Choose parent")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel", action: onCancel)
+                }
             }
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(AppTheme.primarySoft)
-        )
     }
 }
